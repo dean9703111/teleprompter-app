@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Box,
   Button,
@@ -6,6 +6,10 @@ import {
   TextField,
   Typography,
   LinearProgress,
+  Drawer,
+  IconButton,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import {
   Speed,
@@ -13,6 +17,7 @@ import {
   VerticalSplit,
   Close,
   Splitscreen,
+  Settings,
 } from '@mui/icons-material';
 
 interface TeleprompterPlayerProps {
@@ -41,6 +46,10 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   });
   const [renderedLinesHtml, setRenderedLinesHtml] = useState<string>('');
   const [estimatedTime, setEstimatedTime] = useState(0); // 預計完成時間（秒）
+  const [settingsOpen, setSettingsOpen] = useState(false); // 設定面板開關
+  
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md')); // 768px 以下視為手機
   
   const textRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -393,23 +402,33 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     setRenderedLinesHtml(html);
   }, [processedText, fontSize, gapWidth]);
 
-  // 當相關參數變化時重新渲染
+  // 當相關參數變化時重新渲染（加入延遲避免拖拉時過於頻繁）
   useEffect(() => {
-    renderLinesWithPillar();
+    const timer = setTimeout(() => {
+      renderLinesWithPillar();
+    }, 50); // 50ms 延遲
+    return () => clearTimeout(timer);
   }, [renderLinesWithPillar]);
 
-  // 監聽視窗大小變化，重新計算排版
+  // 監聽視窗大小變化，重新計算排版（防抖處理）
   useEffect(() => {
+    let resizeTimer: number;
     const handleResize = () => {
-      if (gapWidth > 0) {
-        renderLinesWithPillar();
-      }
-      // 重新計算預計時間
-      calculateProgress();
+      clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        if (gapWidth > 0) {
+          renderLinesWithPillar();
+        }
+        // 重新計算預計時間
+        calculateProgress();
+      }, 100);
     };
 
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      clearTimeout(resizeTimer);
+    };
   }, [gapWidth, renderLinesWithPillar, calculateProgress]);
 
   // 初始計算預計時間
@@ -419,6 +438,227 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     }, 100);
     return () => clearTimeout(timer);
   }, [processedText, fontSize, calculateProgress]);
+
+  // 設定控制項組件（可重用）
+  const settingsControls = useMemo(() => (
+    <Box sx={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 3 : 2, width: isMobile ? '100%' : 'auto' }}>
+      {/* 速度控制 */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Speed sx={{ fontSize: '20px' }} />
+        <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
+          速度
+        </Typography>
+        <Slider
+          value={speed}
+          onChange={(_, value) => setSpeed(value as number)}
+          min={1}
+          max={20}
+          sx={{
+            flex: 1,
+            minWidth: isMobile ? 'auto' : '80px',
+            marginRight: isMobile ? '12px' : '8px',
+            color: '#2563eb',
+            '& .MuiSlider-track': {
+              backgroundColor: '#2563eb',
+            },
+            '& .MuiSlider-rail': {
+              backgroundColor: '#e2e8f0',
+            },
+          }}
+        />
+        <TextField
+          value={speed}
+          onChange={(e) => {
+            const value = parseInt(e.target.value);
+            if (value >= 1 && value <= 20) {
+              setSpeed(value);
+            }
+          }}
+          size="small"
+          sx={{
+            width: '60px',
+            '& .MuiOutlinedInput-root': {
+              height: '36px',
+              fontSize: '14px',
+              color: isMobile ? '#000000' : '#ffffff',
+              backgroundColor: isMobile ? '#ffffff' : 'rgba(255,255,255,0.1)',
+              '& fieldset': {
+                borderColor: isMobile ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
+              },
+              '&:hover fieldset': {
+                borderColor: isMobile ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
+              },
+              '&.Mui-focused fieldset': {
+                borderColor: '#2563eb',
+              },
+            },
+          }}
+        />
+      </Box>
+
+      {/* 字體大小控制 */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <FormatSize sx={{ fontSize: '20px' }} />
+        <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
+          字體
+        </Typography>
+        <Slider
+          value={fontSize}
+          onChange={(_, value) => setFontSize(value as number)}
+          min={35}
+          max={100}
+          sx={{
+            flex: 1,
+            minWidth: isMobile ? 'auto' : '80px',
+            marginRight: isMobile ? '12px' : '8px',
+            color: '#2563eb',
+            '& .MuiSlider-track': {
+              backgroundColor: '#2563eb',
+            },
+            '& .MuiSlider-rail': {
+              backgroundColor: '#e2e8f0',
+            },
+          }}
+        />
+        <TextField
+          value={fontSize}
+          onChange={(e) => {
+            const value = parseInt(e.target.value);
+            if (value >= 35 && value <= 100) {
+              setFontSize(value);
+            }
+          }}
+          size="small"
+          sx={{
+            width: '60px',
+            '& .MuiOutlinedInput-root': {
+              height: '36px',
+              fontSize: '14px',
+              color: isMobile ? '#000000' : '#ffffff',
+              backgroundColor: isMobile ? '#ffffff' : 'rgba(255,255,255,0.1)',
+              '& fieldset': {
+                borderColor: isMobile ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
+              },
+              '&:hover fieldset': {
+                borderColor: isMobile ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
+              },
+              '&.Mui-focused fieldset': {
+                borderColor: '#2563eb',
+              },
+            },
+          }}
+        />
+      </Box>
+
+      {/* 間隔寬度控制 */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <VerticalSplit sx={{ fontSize: '20px' }} />
+        <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
+          間隔
+        </Typography>
+        <Slider
+          value={gapWidth}
+          onChange={(_, value) => setGapWidth(value as number)}
+          min={0}
+          max={30}
+          sx={{
+            flex: 1,
+            minWidth: isMobile ? 'auto' : '80px',
+            marginRight: isMobile ? '12px' : '8px',
+            color: '#2563eb',
+            '& .MuiSlider-track': {
+              backgroundColor: '#2563eb',
+            },
+            '& .MuiSlider-rail': {
+              backgroundColor: '#e2e8f0',
+            },
+          }}
+        />
+        <TextField
+          value={gapWidth}
+          onChange={(e) => {
+            const value = parseInt(e.target.value);
+            if (value >= 0 && value <= 30) {
+              setGapWidth(value);
+            }
+          }}
+          size="small"
+          sx={{
+            width: '60px',
+            '& .MuiOutlinedInput-root': {
+              height: '36px',
+              fontSize: '14px',
+              color: isMobile ? '#000000' : '#ffffff',
+              backgroundColor: isMobile ? '#ffffff' : 'rgba(255,255,255,0.1)',
+              '& fieldset': {
+                borderColor: isMobile ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
+              },
+              '&:hover fieldset': {
+                borderColor: isMobile ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
+              },
+              '&.Mui-focused fieldset': {
+                borderColor: '#2563eb',
+              },
+            },
+          }}
+        />
+      </Box>
+
+      {/* 段落分割控制 */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Splitscreen sx={{ fontSize: '20px' }} />
+        <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
+          分段
+        </Typography>
+        <Slider
+          value={paragraphSplit}
+          onChange={(_, value) => setParagraphSplit(value as number)}
+          min={10}
+          max={200}
+          sx={{
+            flex: 1,
+            minWidth: isMobile ? 'auto' : '80px',
+            marginRight: isMobile ? '12px' : '8px',
+            color: '#2563eb',
+            '& .MuiSlider-track': {
+              backgroundColor: '#2563eb',
+            },
+            '& .MuiSlider-rail': {
+              backgroundColor: '#e2e8f0',
+            },
+          }}
+        />
+        <TextField
+          value={paragraphSplit}
+          onChange={(e) => {
+            const value = parseInt(e.target.value);
+            if (value >= 10 && value <= 200) {
+              setParagraphSplit(value);
+            }
+          }}
+          size="small"
+          sx={{
+            width: '60px',
+            '& .MuiOutlinedInput-root': {
+              height: '36px',
+              fontSize: '14px',
+              color: isMobile ? '#000000' : '#ffffff',
+              backgroundColor: isMobile ? '#ffffff' : 'rgba(255,255,255,0.1)',
+              '& fieldset': {
+                borderColor: isMobile ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
+              },
+              '&:hover fieldset': {
+                borderColor: isMobile ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
+              },
+              '&.Mui-focused fieldset': {
+                borderColor: '#2563eb',
+              },
+            },
+          }}
+        />
+      </Box>
+    </Box>
+  ), [speed, fontSize, gapWidth, paragraphSplit, isMobile]);
 
   return (
     <Box
@@ -445,22 +685,22 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           backgroundColor: 'rgba(0,0,0,0.8)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
+          justifyContent: isMobile ? 'space-between' : 'center',
           px: 2,
           zIndex: 1001,
         }}
       >
         {/* 播放控制 */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, position: isMobile ? 'static' : 'absolute', left: isMobile ? 'auto' : '16px' }}>
           <Button
             variant="contained"
             onClick={() => setIsPlaying(!isPlaying)}
             sx={{
               backgroundColor: isPlaying ? '#ef4444' : '#22c55e',
               color: '#ffffff',
-              minWidth: '80px',
+              minWidth: isMobile ? '70px' : '80px',
               height: '40px',
-              fontSize: '14px',
+              fontSize: isMobile ? '13px' : '14px',
               fontWeight: 'bold',
               '&:hover': {
                 backgroundColor: isPlaying ? '#dc2626' : '#16a34a',
@@ -471,220 +711,30 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           </Button>
         </Box>
 
-        {/* 中央控制區 */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          {/* 速度控制 */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Speed sx={{ fontSize: '16px' }} />
-            <Typography variant="body2" sx={{ minWidth: '40px' }}>
-              速度
-            </Typography>
-            <Slider
-              value={speed}
-              onChange={(_, value) => setSpeed(value as number)}
-              min={1}
-              max={20}
-              sx={{
-                width: '80px',
-                color: '#2563eb',
-                '& .MuiSlider-track': {
-                  backgroundColor: '#2563eb',
-                },
-                '& .MuiSlider-rail': {
-                  backgroundColor: '#e2e8f0',
-                },
-              }}
-            />
-            <TextField
-              value={speed}
-              onChange={(e) => {
-                const value = parseInt(e.target.value);
-                if (value >= 1 && value <= 20) {
-                  setSpeed(value);
-                }
-              }}
-              size="small"
-              sx={{
-                width: '60px',
-                marginLeft: '0.5em',
-                '& .MuiOutlinedInput-root': {
-                  height: '32px',
-                  fontSize: '12px',
-                  color: '#ffffff',
-                  backgroundColor: 'rgba(255,255,255,0.1)',
-                  '& fieldset': {
-                    borderColor: 'rgba(255,255,255,0.3)',
-                  },
-                  '&:hover fieldset': {
-                    borderColor: 'rgba(255,255,255,0.5)',
-                  },
-                  '&.Mui-focused fieldset': {
-                    borderColor: '#2563eb',
-                  },
-                },
-              }}
-            />
-          </Box>
+        {/* 中央控制區 - 桌面版顯示完整控制項（真正的螢幕中央） */}
+        {!isMobile && settingsControls}
 
-          {/* 字體大小控制 */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <FormatSize sx={{ fontSize: '16px' }} />
-            <Typography variant="body2" sx={{ minWidth: '40px' }}>
-              字體
-            </Typography>
-            <Slider
-              value={fontSize}
-              onChange={(_, value) => setFontSize(value as number)}
-              min={35}
-              max={100}
-              sx={{
-                width: '80px',
-                color: '#2563eb',
-                '& .MuiSlider-track': {
-                  backgroundColor: '#2563eb',
-                },
-                '& .MuiSlider-rail': {
-                  backgroundColor: '#e2e8f0',
-                },
-              }}
-            />
-            <TextField
-              value={fontSize}
-              onChange={(e) => {
-                const value = parseInt(e.target.value);
-                if (value >= 35 && value <= 100) {
-                  setFontSize(value);
-                }
-              }}
-              size="small"
-              sx={{
-                width: '60px',
-                marginLeft: '0.5em',
-                '& .MuiOutlinedInput-root': {
-                  height: '32px',
-                  fontSize: '12px',
-                  color: '#ffffff',
-                  backgroundColor: 'rgba(255,255,255,0.1)',
-                  '& fieldset': {
-                    borderColor: 'rgba(255,255,255,0.3)',
-                  },
-                  '&:hover fieldset': {
-                    borderColor: 'rgba(255,255,255,0.5)',
-                  },
-                  '&.Mui-focused fieldset': {
-                    borderColor: '#2563eb',
-                  },
-                },
-              }}
-            />
-          </Box>
-
-          {/* 間隔寬度控制 */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <VerticalSplit sx={{ fontSize: '16px' }} />
-            <Typography variant="body2" sx={{ minWidth: '40px' }}>
-              間隔
-            </Typography>
-            <Slider
-              value={gapWidth}
-              onChange={(_, value) => setGapWidth(value as number)}
-              min={0}
-              max={30}
-              sx={{
-                width: '80px',
-                color: '#2563eb',
-                '& .MuiSlider-track': {
-                  backgroundColor: '#2563eb',
-                },
-                '& .MuiSlider-rail': {
-                  backgroundColor: '#e2e8f0',
-                },
-              }}
-            />
-            <TextField
-              value={gapWidth}
-              onChange={(e) => {
-                const value = parseInt(e.target.value);
-                if (value >= 0 && value <= 30) {
-                  setGapWidth(value);
-                }
-              }}
-              size="small"
-              sx={{
-                width: '60px',
-                marginLeft: '0.5em',
-                '& .MuiOutlinedInput-root': {
-                  height: '32px',
-                  fontSize: '12px',
-                  color: '#ffffff',
-                  backgroundColor: 'rgba(255,255,255,0.1)',
-                  '& fieldset': {
-                    borderColor: 'rgba(255,255,255,0.3)',
-                  },
-                  '&:hover fieldset': {
-                    borderColor: 'rgba(255,255,255,0.5)',
-                  },
-                  '&.Mui-focused fieldset': {
-                    borderColor: '#2563eb',
-                  },
-                },
-              }}
-            />
-          </Box>
-
-          {/* 段落分割控制 */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Splitscreen sx={{ fontSize: '16px' }} />
-            <Typography variant="body2" sx={{ minWidth: '40px' }}>
-              分段
-            </Typography>
-            <Slider
-              value={paragraphSplit}
-              onChange={(_, value) => setParagraphSplit(value as number)}
-              min={10}
-              max={200}
-              sx={{
-                width: '80px',
-                color: '#2563eb',
-                '& .MuiSlider-track': {
-                  backgroundColor: '#2563eb',
-                },
-                '& .MuiSlider-rail': {
-                  backgroundColor: '#e2e8f0',
-                },
-              }}
-            />
-            <TextField
-              value={paragraphSplit}
-              onChange={(e) => {
-                const value = parseInt(e.target.value);
-                if (value >= 10 && value <= 200) {
-                  setParagraphSplit(value);
-                }
-              }}
-              size="small"
-              sx={{
-                width: '60px',
-                marginLeft: '0.5em',
-                '& .MuiOutlinedInput-root': {
-                  height: '32px',
-                  fontSize: '12px',
-                  color: '#ffffff',
-                  backgroundColor: 'rgba(255,255,255,0.1)',
-                  '& fieldset': {
-                    borderColor: 'rgba(255,255,255,0.3)',
-                  },
-                  '&:hover fieldset': {
-                    borderColor: 'rgba(255,255,255,0.5)',
-                  },
-                  '&.Mui-focused fieldset': {
-                    borderColor: '#2563eb',
-                  },
-                },
-              }}
-            />
-          </Box>
-        </Box>
+        {/* 手機版顯示設定按鈕 */}
+        {isMobile && (
+          <Button
+            variant="outlined"
+            onClick={() => setSettingsOpen(true)}
+            startIcon={<Settings />}
+            sx={{
+              color: '#ffffff',
+              borderColor: 'rgba(255,255,255,0.3)',
+              minWidth: '70px',
+              height: '40px',
+              fontSize: '13px',
+              '&:hover': {
+                borderColor: 'rgba(255,255,255,0.5)',
+                backgroundColor: 'rgba(255,255,255,0.1)',
+              },
+            }}
+          >
+            設定
+          </Button>
+        )}
 
         {/* 退出按鈕 */}
         <Button
@@ -694,9 +744,11 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           sx={{
             color: '#ffffff',
             borderColor: 'rgba(255,255,255,0.3)',
-            minWidth: '80px',
+            minWidth: isMobile ? '70px' : '80px',
             height: '40px',
-            fontSize: '14px',
+            fontSize: isMobile ? '13px' : '14px',
+            position: isMobile ? 'static' : 'absolute',
+            right: isMobile ? 'auto' : '16px',
             '&:hover': {
               borderColor: 'rgba(255,255,255,0.5)',
               backgroundColor: 'rgba(255,255,255,0.1)',
@@ -706,6 +758,32 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           退出
         </Button>
       </Box>
+
+      {/* 設定面板 Drawer（手機版） */}
+      <Drawer
+        anchor="bottom"
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        sx={{
+          '& .MuiDrawer-paper': {
+            backgroundColor: '#ffffff',
+            borderTopLeftRadius: '16px',
+            borderTopRightRadius: '16px',
+            maxHeight: '80vh',
+            padding: 3,
+          },
+        }}
+      >
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+          <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#000000' }}>
+            設定
+          </Typography>
+          <IconButton onClick={() => setSettingsOpen(false)}>
+            <Close />
+          </IconButton>
+        </Box>
+        {settingsControls}
+      </Drawer>
 
       {/* 隱藏的測量元素 */}
       <span
@@ -788,17 +866,17 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
       <Box
         sx={{
           position: 'fixed',
-          top: '70px',
-          right: '32px',
+          top: isMobile ? '68px' : '70px',
+          right: isMobile ? '16px' : '32px',
           zIndex: 1100,
-          fontSize: '2.2rem',
+          fontSize: isMobile ? '1.4rem' : '2.2rem',
           color: '#fff',
-          background: 'rgba(0,0,0,0.35)',
+          background: 'rgba(0,0,0,0.5)',
           borderRadius: '1em',
-          padding: '0.3em 1.1em',
+          padding: isMobile ? '0.2em 0.8em' : '0.3em 1.1em',
           pointerEvents: 'none',
           textAlign: 'center',
-          minWidth: '3.5em',
+          minWidth: isMobile ? '2.5em' : '3.5em',
           backdropFilter: 'blur(4px)',
         }}
       >
