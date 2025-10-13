@@ -6,12 +6,8 @@ import {
   TextField,
   Typography,
   LinearProgress,
-  IconButton,
 } from '@mui/material';
 import {
-  PlayArrow,
-  Pause,
-  ExitToApp,
   Speed,
   FormatSize,
 } from '@mui/icons-material';
@@ -29,7 +25,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const [progress, setProgress] = useState(0);
   
   const textRef = useRef<HTMLDivElement>(null);
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number | undefined>();
   const startTimeRef = useRef<number>(0);
   const pausedTimeRef = useRef<number>(0);
 
