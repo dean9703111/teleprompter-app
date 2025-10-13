@@ -10,6 +10,8 @@ import {
 import {
   Speed,
   FormatSize,
+  VerticalSplit,
+  Close,
 } from '@mui/icons-material';
 
 interface TeleprompterPlayerProps {
@@ -21,21 +23,26 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState(10);
   const [fontSize, setFontSize] = useState(48);
-  const [scrollPosition, setScrollPosition] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [gapWidth, setGapWidth] = useState(0); // 間隔寬度 0-30%
+  const [renderedLinesHtml, setRenderedLinesHtml] = useState<string>('');
   
   const textRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number | undefined>(undefined);
   const startTimeRef = useRef<number>(0);
   const pausedTimeRef = useRef<number>(0);
+  const measureSpanRef = useRef<HTMLSpanElement | null>(null);
 
   // 載入儲存的設定
   useEffect(() => {
     const savedSpeed = localStorage.getItem('teleprompter-speed');
     const savedFontSize = localStorage.getItem('teleprompter-fontSize');
+    const savedGapWidth = localStorage.getItem('teleprompter-gapWidth');
     
     if (savedSpeed) setSpeed(parseInt(savedSpeed));
     if (savedFontSize) setFontSize(parseInt(savedFontSize));
+    if (savedGapWidth) setGapWidth(parseInt(savedGapWidth));
   }, []);
 
   // 儲存設定到 localStorage
@@ -47,52 +54,54 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     localStorage.setItem('teleprompter-fontSize', fontSize.toString());
   }, [fontSize]);
 
+  useEffect(() => {
+    localStorage.setItem('teleprompter-gapWidth', gapWidth.toString());
+  }, [gapWidth]);
+
   // 計算總高度和進度
   const calculateProgress = useCallback(() => {
-    if (!textRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
     
-    const containerHeight = window.innerHeight - 64; // 扣除控制列高度
-    const textHeight = textRef.current.scrollHeight;
-    const maxScroll = textHeight - containerHeight;
+    const maxScroll = container.scrollHeight - container.clientHeight;
     
     if (maxScroll <= 0) {
       setProgress(100);
       return;
     }
     
-    const currentProgress = (scrollPosition / maxScroll) * 100;
+    const currentProgress = (container.scrollTop / maxScroll) * 100;
     setProgress(Math.min(100, Math.max(0, currentProgress)));
-  }, [scrollPosition]);
+  }, []);
 
   // 滾動動畫
   const animateScroll = useCallback((timestamp: number) => {
-    if (!isPlaying || !textRef.current) return;
+    const container = containerRef.current;
+    if (!isPlaying || !container) return;
     
     if (startTimeRef.current === 0) {
       startTimeRef.current = timestamp;
       // 根據當前位置計算已經過的時間
-      pausedTimeRef.current = (scrollPosition / (speed * 50)) * 1000;
+      pausedTimeRef.current = (container.scrollTop / (speed * 50)) * 1000;
     }
     
     const elapsed = timestamp - startTimeRef.current + pausedTimeRef.current;
     const newPosition = (elapsed / 1000) * speed * 50; // 50px per second at speed 1
     
-    setScrollPosition(newPosition);
+    container.scrollTop = newPosition;
     calculateProgress();
     
     // 檢查是否到達底部
-    const containerHeight = window.innerHeight - 64;
-    const textHeight = textRef.current.scrollHeight;
-    const maxScroll = textHeight - containerHeight;
+    const maxScroll = container.scrollHeight - container.clientHeight;
     
     if (newPosition >= maxScroll) {
       setIsPlaying(false);
-      setScrollPosition(maxScroll);
+      container.scrollTop = maxScroll;
       return;
     }
     
     animationRef.current = requestAnimationFrame(animateScroll);
-  }, [isPlaying, speed, calculateProgress, scrollPosition]);
+  }, [isPlaying, speed, calculateProgress]);
 
   // 開始/暫停播放
   useEffect(() => {
@@ -116,21 +125,20 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
     
-    if (!textRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
     
     // 使用實際的 deltaY 值，提供更自然的滾動感受
-    const containerHeight = window.innerHeight - 64;
-    const textHeight = textRef.current.scrollHeight;
-    const maxScroll = textHeight - containerHeight;
+    const maxScroll = container.scrollHeight - container.clientHeight;
     
-    const newPosition = Math.max(0, Math.min(maxScroll, scrollPosition + e.deltaY));
-    setScrollPosition(newPosition);
+    const newPosition = Math.max(0, Math.min(maxScroll, container.scrollTop + e.deltaY));
+    container.scrollTop = newPosition;
     calculateProgress();
     
     // 手動滾動時重置時間參考，確保下次播放從當前位置開始
     startTimeRef.current = 0;
     pausedTimeRef.current = 0;
-  }, [scrollPosition, calculateProgress]);
+  }, [calculateProgress]);
 
   // 快捷鍵處理
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -177,7 +185,9 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   // 重置播放狀態
   const resetPlayback = () => {
     setIsPlaying(false);
-    setScrollPosition(0);
+    if (containerRef.current) {
+      containerRef.current.scrollTop = 0;
+    }
     setProgress(0);
     startTimeRef.current = 0;
     pausedTimeRef.current = 0;
@@ -187,6 +197,124 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   useEffect(() => {
     resetPlayback();
   }, [text]);
+
+  // 渲染繞柱子的文字
+  const renderLinesWithPillar = useCallback(() => {
+    if (gapWidth === 0 || !containerRef.current || !measureSpanRef.current) {
+      setRenderedLinesHtml('');
+      return;
+    }
+
+    const container = containerRef.current;
+    const containerWidth = container.offsetWidth;
+    const computedStyle = getComputedStyle(container);
+    const padL = parseFloat(computedStyle.paddingLeft) || 0;
+    const padR = parseFloat(computedStyle.paddingRight) || 0;
+    const contentWidth = containerWidth - padL - padR;
+    
+    const pillarWidthPx = (containerWidth * gapWidth) / 100;
+    const centerX = padL + contentWidth / 2;
+    const pillarLeft = centerX - pillarWidthPx / 2;
+    const pillarRight = centerX + pillarWidthPx / 2;
+    const margin = 8;
+
+    const measureSpan = measureSpanRef.current;
+    measureSpan.style.fontSize = `${fontSize}px`;
+    measureSpan.style.fontFamily = 'inherit';
+
+    const escapeHtml = (text: string) => {
+      return text.replace(/[<>&"]/g, (c) => ({
+        '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;'
+      }[c] || c));
+    };
+
+    let html = '';
+    const paras = text.replace(/\r/g, '').split('\n');
+
+    for (let pi = 0; pi < paras.length; ++pi) {
+      let para = paras[pi];
+      if (!para) {
+        html += `<div style="display:flex;align-items:flex-start;width:100%;min-height:1em;margin-bottom:0.1em;flex-wrap:nowrap;overflow:hidden;">
+          <span style="display:inline-block;white-space:pre;max-width:48vw;overflow-wrap:break-word;word-break:break-all;">&nbsp;</span>
+          <span style="display:inline-block;height:1em;flex-shrink:0;width:${gapWidth}%;"></span>
+          <span style="display:inline-block;white-space:pre;max-width:48vw;overflow-wrap:break-word;word-break:break-all;"></span>
+        </div>`;
+        continue;
+      }
+
+      while (para.length > 0) {
+        let left = '', right = '';
+        let i = 1;
+
+        // 填充左邊直到碰到柱子
+        for (; i <= para.length; ++i) {
+          measureSpan.textContent = para.slice(0, i);
+          if (measureSpan.offsetWidth < pillarLeft - padL - margin) {
+            left = para.slice(0, i);
+          } else {
+            left = para.slice(0, i - 1);
+            right = para.slice(i - 1);
+            break;
+          }
+        }
+
+        if (right === '' && left !== para) {
+          right = para;
+          left = '';
+        }
+
+        // 填充右邊
+        let rightSeg = '';
+        if (right) {
+          let j = 1;
+          for (; j <= right.length; ++j) {
+            measureSpan.textContent = right.slice(0, j);
+            if (measureSpan.offsetWidth < (contentWidth - (pillarRight - padL) - margin)) {
+              rightSeg = right.slice(0, j);
+            } else {
+              rightSeg = right.slice(0, j - 1);
+              break;
+            }
+          }
+        }
+
+        if (right && rightSeg === '' && right.length > 0) {
+          rightSeg = right;
+        }
+
+        html += `<div style="display:flex;align-items:flex-start;width:100%;min-height:1em;margin-bottom:0.1em;flex-wrap:nowrap;overflow:hidden;">
+          <span style="display:inline-block;white-space:pre;max-width:48vw;overflow-wrap:break-word;word-break:break-all;">${escapeHtml(left) || '&nbsp;'}</span>
+          <span style="display:inline-block;height:1em;flex-shrink:0;width:${gapWidth}%;"></span>
+          <span style="display:inline-block;white-space:pre;max-width:48vw;overflow-wrap:break-word;word-break:break-all;">${escapeHtml(rightSeg)}</span>
+        </div>`;
+
+        if (right) {
+          para = right.slice(rightSeg.length);
+        } else {
+          para = '';
+        }
+      }
+    }
+
+    setRenderedLinesHtml(html);
+  }, [text, fontSize, gapWidth]);
+
+  // 當相關參數變化時重新渲染
+  useEffect(() => {
+    renderLinesWithPillar();
+  }, [renderLinesWithPillar]);
+
+  // 監聽視窗大小變化，重新計算排版
+  useEffect(() => {
+    const handleResize = () => {
+      if (gapWidth > 0) {
+        renderLinesWithPillar();
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [gapWidth, renderLinesWithPillar]);
 
   return (
     <Box
@@ -274,6 +402,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
               size="small"
               sx={{
                 width: '60px',
+                marginLeft: '0.5em',
                 '& .MuiOutlinedInput-root': {
                   height: '32px',
                   fontSize: '12px',
@@ -326,6 +455,60 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
               size="small"
               sx={{
                 width: '60px',
+                marginLeft: '0.5em',
+                '& .MuiOutlinedInput-root': {
+                  height: '32px',
+                  fontSize: '12px',
+                  color: '#ffffff',
+                  backgroundColor: 'rgba(255,255,255,0.1)',
+                  '& fieldset': {
+                    borderColor: 'rgba(255,255,255,0.3)',
+                  },
+                  '&:hover fieldset': {
+                    borderColor: 'rgba(255,255,255,0.5)',
+                  },
+                  '&.Mui-focused fieldset': {
+                    borderColor: '#2563eb',
+                  },
+                },
+              }}
+            />
+          </Box>
+
+          {/* 間隔寬度控制 */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <VerticalSplit sx={{ fontSize: '16px' }} />
+            <Typography variant="body2" sx={{ minWidth: '40px' }}>
+              間隔
+            </Typography>
+            <Slider
+              value={gapWidth}
+              onChange={(_, value) => setGapWidth(value as number)}
+              min={0}
+              max={30}
+              sx={{
+                width: '80px',
+                color: '#2563eb',
+                '& .MuiSlider-track': {
+                  backgroundColor: '#2563eb',
+                },
+                '& .MuiSlider-rail': {
+                  backgroundColor: '#e2e8f0',
+                },
+              }}
+            />
+            <TextField
+              value={gapWidth}
+              onChange={(e) => {
+                const value = parseInt(e.target.value);
+                if (value >= 0 && value <= 30) {
+                  setGapWidth(value);
+                }
+              }}
+              size="small"
+              sx={{
+                width: '60px',
+                marginLeft: '0.5em',
                 '& .MuiOutlinedInput-root': {
                   height: '32px',
                   fontSize: '12px',
@@ -350,6 +533,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         <Button
           variant="outlined"
           onClick={onExit}
+          startIcon={<Close />}
           sx={{
             color: '#ffffff',
             borderColor: 'rgba(255,255,255,0.3)',
@@ -366,27 +550,75 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         </Button>
       </Box>
 
+      {/* 隱藏的測量元素 */}
+      <span
+        ref={measureSpanRef}
+        style={{
+          visibility: 'hidden',
+          position: 'fixed',
+          left: '-9999px',
+          top: 0,
+          whiteSpace: 'pre',
+          fontSize: 'inherit',
+          fontFamily: 'inherit',
+          zIndex: -99,
+          pointerEvents: 'none',
+        }}
+      />
+
       {/* 文字顯示區 */}
       <Box
-        ref={textRef}
+        ref={containerRef}
         sx={{
           position: 'absolute',
           top: '60px',
           left: 0,
           right: 0,
           bottom: '4px',
-          padding: 4,
-          fontSize: `${fontSize}px`,
-          fontWeight: 'bold',
-          lineHeight: 1.4,
-          textAlign: 'center',
-          transform: `translateY(-${scrollPosition}px)`,
-          transition: isPlaying ? 'none' : 'transform 0.1s ease-out',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          '&::-webkit-scrollbar': {
+            display: 'none',
+          },
+          scrollbarWidth: 'none',
         }}
       >
-        {text}
+        {gapWidth === 0 ? (
+          // 無間隔模式 - 原始顯示
+          <Box
+            ref={textRef}
+            sx={{
+              padding: 4,
+              fontSize: `${fontSize}px`,
+              fontWeight: 'bold',
+              lineHeight: 1.4,
+              textAlign: 'left',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {text}
+          </Box>
+        ) : (
+          // 分欄模式 - 繞柱子排版
+          <Box
+            sx={{
+              position: 'relative',
+              padding: 4,
+              fontSize: `${fontSize}px`,
+              fontWeight: 'bold',
+              lineHeight: 1.4,
+            }}
+          >
+            {/* 隱形柱子（不顯示） */}
+
+            {/* 文字行 */}
+            <Box
+              sx={{ position: 'relative', zIndex: 2 }}
+              dangerouslySetInnerHTML={{ __html: renderedLinesHtml }}
+            />
+          </Box>
+        )}
       </Box>
 
       {/* 進度指示器 */}

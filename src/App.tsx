@@ -10,7 +10,7 @@ import {
   useMediaQuery,
   Chip,
 } from '@mui/material';
-import { PlayArrow, Keyboard } from '@mui/icons-material';
+import { PlayArrow, Keyboard, GitHub, YouTube } from '@mui/icons-material';
 import TeleprompterPlayer from './components/TeleprompterPlayer';
 
 function App() {
@@ -77,34 +77,148 @@ function App() {
         py: 4,
       }}
     >
-      {/* 頂部標題區塊 */}
-      <Box
-        sx={{
-          width: '100%',
-          height: '80px',
-          backgroundColor: '#f8fafc',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          mb: 4,
-        }}
-      >
-        <Typography
-          variant="h3"
-          component="h1"
-          sx={{
-            fontSize: { xs: '24px', sm: '32px' },
-            fontWeight: 'bold',
-            color: '#1e293b',
-            textAlign: 'center',
-          }}
-        >
-          提詞器
-        </Typography>
-      </Box>
-
-      {/* 主要文字輸入區塊 */}
       <Container maxWidth="md">
+        {/* 標題和作者資訊 */}
+        <Box sx={{ textAlign: 'center', mb: 3 }}>
+          <Typography
+            variant="h3"
+            component="h1"
+            sx={{
+              fontSize: { xs: '24px', sm: '32px' },
+              fontWeight: 'bold',
+              color: '#1e293b',
+              mb: 1.5,
+            }}
+          >
+            提詞器
+          </Typography>
+          
+          <Typography
+            component="a"
+            href="https://medium.com/@dean-lin"
+            target="_blank"
+            rel="noopener noreferrer"
+            variant="body2"
+            sx={{
+              color: '#64748b',
+              fontSize: '16px',
+              mb: 3,
+              textDecoration: 'none',
+              transition: 'color 0.2s',
+              '&:hover': {
+                color: '#1e293b',
+                textDecoration: 'underline',
+              },
+            }}
+          >
+            作者 林鼎淵 Dean Lin | 追蹤我學習更多資訊
+          </Typography>
+          
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: 1.5,
+              mt: 1.5,
+            }}
+          >
+            <Box
+              component="a"
+              href="https://www.facebook.com/deanlinbao"
+              target="_blank"
+              rel="noopener noreferrer"
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                backgroundColor: '#1877f2',
+                color: '#ffffff',
+                textDecoration: 'none',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'scale(1.1)',
+                },
+              }}
+            >
+              <Typography sx={{ fontSize: 16, fontWeight: 'bold' }}>f</Typography>
+            </Box>
+            <Box
+              component="a"
+              href="https://github.com/dean9703111"
+              target="_blank"
+              rel="noopener noreferrer"
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                backgroundColor: '#181717',
+                color: '#ffffff',
+                textDecoration: 'none',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'scale(1.1)',
+                },
+              }}
+            >
+              <GitHub sx={{ fontSize: 18 }} />
+            </Box>
+            <Box
+              component="a"
+              href="https://dean-lin.medium.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                backgroundColor: '#000000',
+                color: '#ffffff',
+                textDecoration: 'none',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'scale(1.1)',
+                },
+              }}
+            >
+              <Typography sx={{ fontSize: 16, fontWeight: 'bold' }}>M</Typography>
+            </Box>
+            <Box
+              component="a"
+              href="https://www.youtube.com/@dlcorner"
+              target="_blank"
+              rel="noopener noreferrer"
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                backgroundColor: '#ff0000',
+                color: '#ffffff',
+                textDecoration: 'none',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'scale(1.1)',
+                },
+              }}
+            >
+              <YouTube sx={{ fontSize: 18 }} />
+            </Box>
+          </Box>
+        </Box>
+
+        {/* 主要文字輸入區塊 */}
         <Paper
           elevation={3}
           sx={{
@@ -117,7 +231,7 @@ function App() {
           <TextField
             multiline
             fullWidth
-            rows={isMobile ? 8 : 12}
+            rows={isMobile ? 6 : 8}
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="請輸入要朗讀的文字內容..."
@@ -153,7 +267,7 @@ function App() {
             <Paper
               elevation={1}
               sx={{
-                p: 2,
+                p: 1.5,
                 backgroundColor: '#fef3c7',
                 border: '2px solid #f59e0b',
                 borderRadius: 2,
@@ -213,7 +327,7 @@ function App() {
             <Paper
               elevation={1}
               sx={{
-                p: 2,
+                p: 1.5,
                 backgroundColor: '#ddd6fe',
                 border: '2px solid #8b5cf6',
                 borderRadius: 2,
@@ -273,7 +387,7 @@ function App() {
             <Paper
               elevation={1}
               sx={{
-                p: 2,
+                p: 1.5,
                 backgroundColor: '#d1fae5',
                 border: '2px solid #10b981',
                 borderRadius: 2,
@@ -366,8 +480,9 @@ function App() {
 
           <Box
             sx={{
-              display: 'grid',
-              gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)' },
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'center',
               gap: 2,
             }}
           >
@@ -384,7 +499,7 @@ function App() {
                 sx={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 1.5,
+                  gap: 1,
                 }}
               >
                 <Chip
@@ -393,15 +508,15 @@ function App() {
                     backgroundColor: '#1e40af',
                     color: '#ffffff',
                     fontWeight: 'bold',
-                    fontSize: '14px',
-                    minWidth: '70px',
-                    height: '32px',
+                    fontSize: '13px',
+                    minWidth: '60px',
+                    height: '28px',
                   }}
                 />
                 <Typography
                   sx={{
                     color: '#334155',
-                    fontSize: '15px',
+                    fontSize: '14px',
                   }}
                 >
                   {item.desc}
