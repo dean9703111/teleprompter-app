@@ -25,7 +25,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const [progress, setProgress] = useState(0);
   
   const textRef = useRef<HTMLDivElement>(null);
-  const animationRef = useRef<number | undefined>();
+  const animationRef = useRef<number>();
   const startTimeRef = useRef<number>(0);
   const pausedTimeRef = useRef<number>(0);
 
