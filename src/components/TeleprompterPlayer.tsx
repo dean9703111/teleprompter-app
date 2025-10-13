@@ -22,12 +22,25 @@ interface TeleprompterPlayerProps {
 
 const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit }) => {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState(10);
-  const [fontSize, setFontSize] = useState(48);
+  const [speed, setSpeed] = useState(() => {
+    const saved = localStorage.getItem('teleprompter-speed');
+    return saved ? parseInt(saved) : 10;
+  });
+  const [fontSize, setFontSize] = useState(() => {
+    const saved = localStorage.getItem('teleprompter-fontSize');
+    return saved ? parseInt(saved) : 48;
+  });
   const [progress, setProgress] = useState(0);
-  const [gapWidth, setGapWidth] = useState(0); // 間隔寬度 0-30%
-  const [paragraphSplit, setParagraphSplit] = useState(100); // 段落分割長度 10-200
+  const [gapWidth, setGapWidth] = useState(() => {
+    const saved = localStorage.getItem('teleprompter-gapWidth');
+    return saved ? parseInt(saved) : 0;
+  });
+  const [paragraphSplit, setParagraphSplit] = useState(() => {
+    const saved = localStorage.getItem('teleprompter-paragraphSplit');
+    return saved ? parseInt(saved) : 100;
+  });
   const [renderedLinesHtml, setRenderedLinesHtml] = useState<string>('');
+  const [estimatedTime, setEstimatedTime] = useState(0); // 預計完成時間（秒）
   
   const textRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -35,19 +48,6 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const startTimeRef = useRef<number>(0);
   const pausedTimeRef = useRef<number>(0);
   const measureSpanRef = useRef<HTMLSpanElement | null>(null);
-
-  // 載入儲存的設定
-  useEffect(() => {
-    const savedSpeed = localStorage.getItem('teleprompter-speed');
-    const savedFontSize = localStorage.getItem('teleprompter-fontSize');
-    const savedGapWidth = localStorage.getItem('teleprompter-gapWidth');
-    const savedParagraphSplit = localStorage.getItem('teleprompter-paragraphSplit');
-    
-    if (savedSpeed) setSpeed(parseInt(savedSpeed));
-    if (savedFontSize) setFontSize(parseInt(savedFontSize));
-    if (savedGapWidth) setGapWidth(parseInt(savedGapWidth));
-    if (savedParagraphSplit) setParagraphSplit(parseInt(savedParagraphSplit));
-  }, []);
 
   // 儲存設定到 localStorage
   useEffect(() => {
@@ -75,12 +75,19 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     
     if (maxScroll <= 0) {
       setProgress(100);
+      setEstimatedTime(0);
       return;
     }
     
     const currentProgress = (container.scrollTop / maxScroll) * 100;
     setProgress(Math.min(100, Math.max(0, currentProgress)));
-  }, []);
+
+    // 計算剩餘滾動距離和預計時間
+    const remainingScroll = maxScroll - container.scrollTop;
+    const scrollSpeed = speed * 50; // px per second
+    const estimatedSeconds = remainingScroll / scrollSpeed;
+    setEstimatedTime(Math.max(0, Math.ceil(estimatedSeconds)));
+  }, [speed]);
 
   // 滾動動畫
   const animateScroll = useCallback((timestamp: number) => {
@@ -271,6 +278,20 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   // 處理後的文字（應用段落分割）
   const processedText = applyParagraphSplit(text);
 
+  // 格式化預計時間
+  const formatEstimatedTime = useCallback((seconds: number): string => {
+    if (seconds <= 0) return '0s';
+    
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    
+    if (minutes > 0) {
+      return `${minutes}m ${remainingSeconds}s`;
+    } else {
+      return `${remainingSeconds}s`;
+    }
+  }, []);
+
   // 渲染繞柱子的文字
   const renderLinesWithPillar = useCallback(() => {
     if (gapWidth === 0 || !containerRef.current || !measureSpanRef.current) {
@@ -383,11 +404,21 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
       if (gapWidth > 0) {
         renderLinesWithPillar();
       }
+      // 重新計算預計時間
+      calculateProgress();
     };
 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [gapWidth, renderLinesWithPillar]);
+  }, [gapWidth, renderLinesWithPillar, calculateProgress]);
+
+  // 初始計算預計時間
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      calculateProgress();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [processedText, fontSize, calculateProgress]);
 
   return (
     <Box
@@ -709,6 +740,9 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           scrollbarWidth: 'none',
         }}
       >
+        {/* 上方空白區 - 50% 螢幕高度 */}
+        <Box sx={{ height: '50vh', pointerEvents: 'none' }} />
+
         {gapWidth === 0 ? (
           // 無間隔模式 - 原始顯示
           <Box
@@ -745,6 +779,30 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
             />
           </Box>
         )}
+
+        {/* 下方空白區 - 50% 螢幕高度 */}
+        <Box sx={{ height: '50vh', pointerEvents: 'none' }} />
+      </Box>
+
+      {/* 預計完成時間顯示 */}
+      <Box
+        sx={{
+          position: 'fixed',
+          top: '70px',
+          right: '32px',
+          zIndex: 1100,
+          fontSize: '2.2rem',
+          color: '#fff',
+          background: 'rgba(0,0,0,0.35)',
+          borderRadius: '1em',
+          padding: '0.3em 1.1em',
+          pointerEvents: 'none',
+          textAlign: 'center',
+          minWidth: '3.5em',
+          backdropFilter: 'blur(4px)',
+        }}
+      >
+        {formatEstimatedTime(estimatedTime)}
       </Box>
 
       {/* 進度指示器 */}
