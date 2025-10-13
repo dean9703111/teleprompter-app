@@ -12,6 +12,7 @@ import {
   FormatSize,
   VerticalSplit,
   Close,
+  Splitscreen,
 } from '@mui/icons-material';
 
 interface TeleprompterPlayerProps {
@@ -25,6 +26,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const [fontSize, setFontSize] = useState(48);
   const [progress, setProgress] = useState(0);
   const [gapWidth, setGapWidth] = useState(0); // 間隔寬度 0-30%
+  const [paragraphSplit, setParagraphSplit] = useState(100); // 段落分割長度 10-200
   const [renderedLinesHtml, setRenderedLinesHtml] = useState<string>('');
   
   const textRef = useRef<HTMLDivElement>(null);
@@ -39,10 +41,12 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     const savedSpeed = localStorage.getItem('teleprompter-speed');
     const savedFontSize = localStorage.getItem('teleprompter-fontSize');
     const savedGapWidth = localStorage.getItem('teleprompter-gapWidth');
+    const savedParagraphSplit = localStorage.getItem('teleprompter-paragraphSplit');
     
     if (savedSpeed) setSpeed(parseInt(savedSpeed));
     if (savedFontSize) setFontSize(parseInt(savedFontSize));
     if (savedGapWidth) setGapWidth(parseInt(savedGapWidth));
+    if (savedParagraphSplit) setParagraphSplit(parseInt(savedParagraphSplit));
   }, []);
 
   // 儲存設定到 localStorage
@@ -57,6 +61,10 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   useEffect(() => {
     localStorage.setItem('teleprompter-gapWidth', gapWidth.toString());
   }, [gapWidth]);
+
+  useEffect(() => {
+    localStorage.setItem('teleprompter-paragraphSplit', paragraphSplit.toString());
+  }, [paragraphSplit]);
 
   // 計算總高度和進度
   const calculateProgress = useCallback(() => {
@@ -198,6 +206,71 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     resetPlayback();
   }, [text]);
 
+  // 計算文字長度（英文單詞算 2 個字符）
+  const calculateTextLength = (text: string): number => {
+    let length = 0;
+    const tokens = text.match(/[a-zA-Z]+|[^a-zA-Z]/g) || [];
+    
+    tokens.forEach(token => {
+      if (/[a-zA-Z]+/.test(token)) {
+        // 英文單詞算 2 個字符
+        length += 2;
+      } else {
+        // 其他字符（中文、標點等）算 1 個字符
+        length += token.length;
+      }
+    });
+    
+    return length;
+  };
+
+  // 應用段落分割
+  const applyParagraphSplit = useCallback((inputText: string) => {
+    if (paragraphSplit <= 0) return inputText;
+
+    const lines = inputText.split('\n');
+    const result: string[] = [];
+
+    lines.forEach((line) => {
+      const lineLength = calculateTextLength(line);
+      
+      if (lineLength <= paragraphSplit) {
+        result.push(line);
+      } else {
+        // 將長文字分割成多個段落，保持英文單詞完整
+        const tokens = line.match(/[a-zA-Z]+|[^a-zA-Z]/g) || [];
+        let currentLine = '';
+        let currentLength = 0;
+
+        tokens.forEach(token => {
+          const tokenLength = /[a-zA-Z]+/.test(token) ? 2 : token.length;
+          
+          if (currentLength + tokenLength <= paragraphSplit) {
+            currentLine += token;
+            currentLength += tokenLength;
+          } else {
+            // 當前行已滿，開始新行
+            if (currentLine) {
+              result.push(currentLine);
+            }
+            currentLine = token;
+            currentLength = tokenLength;
+          }
+        });
+
+        // 添加最後一行
+        if (currentLine) {
+          result.push(currentLine);
+        }
+      }
+    });
+
+    return result.join('\n');
+  }, [paragraphSplit]);
+
+  // 處理後的文字（應用段落分割）
+  const processedText = applyParagraphSplit(text);
+
   // 渲染繞柱子的文字
   const renderLinesWithPillar = useCallback(() => {
     if (gapWidth === 0 || !containerRef.current || !measureSpanRef.current) {
@@ -229,7 +302,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     };
 
     let html = '';
-    const paras = text.replace(/\r/g, '').split('\n');
+    const paras = processedText.replace(/\r/g, '').split('\n');
 
     for (let pi = 0; pi < paras.length; ++pi) {
       let para = paras[pi];
@@ -297,7 +370,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     }
 
     setRenderedLinesHtml(html);
-  }, [text, fontSize, gapWidth]);
+  }, [processedText, fontSize, gapWidth]);
 
   // 當相關參數變化時重新渲染
   useEffect(() => {
@@ -527,6 +600,59 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
               }}
             />
           </Box>
+
+          {/* 段落分割控制 */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Splitscreen sx={{ fontSize: '16px' }} />
+            <Typography variant="body2" sx={{ minWidth: '40px' }}>
+              分段
+            </Typography>
+            <Slider
+              value={paragraphSplit}
+              onChange={(_, value) => setParagraphSplit(value as number)}
+              min={10}
+              max={200}
+              sx={{
+                width: '80px',
+                color: '#2563eb',
+                '& .MuiSlider-track': {
+                  backgroundColor: '#2563eb',
+                },
+                '& .MuiSlider-rail': {
+                  backgroundColor: '#e2e8f0',
+                },
+              }}
+            />
+            <TextField
+              value={paragraphSplit}
+              onChange={(e) => {
+                const value = parseInt(e.target.value);
+                if (value >= 10 && value <= 200) {
+                  setParagraphSplit(value);
+                }
+              }}
+              size="small"
+              sx={{
+                width: '60px',
+                marginLeft: '0.5em',
+                '& .MuiOutlinedInput-root': {
+                  height: '32px',
+                  fontSize: '12px',
+                  color: '#ffffff',
+                  backgroundColor: 'rgba(255,255,255,0.1)',
+                  '& fieldset': {
+                    borderColor: 'rgba(255,255,255,0.3)',
+                  },
+                  '&:hover fieldset': {
+                    borderColor: 'rgba(255,255,255,0.5)',
+                  },
+                  '&.Mui-focused fieldset': {
+                    borderColor: '#2563eb',
+                  },
+                },
+              }}
+            />
+          </Box>
         </Box>
 
         {/* 退出按鈕 */}
@@ -597,7 +723,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
               wordBreak: 'break-word',
             }}
           >
-            {text}
+            {processedText}
           </Box>
         ) : (
           // 分欄模式 - 繞柱子排版
