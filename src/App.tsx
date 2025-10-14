@@ -273,53 +273,22 @@ function App() {
                 borderRadius: 2,
               }}
             >
-              <Typography
-                variant="caption"
-                sx={{
-                  color: '#92400e',
-                  fontWeight: 'bold',
-                  fontSize: '12px',
-                  display: 'block',
-                  mb: 0.5,
-                }}
-              >
-                中文
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                <Box>
-                  <Typography
-                    sx={{
-                      fontSize: '24px',
-                      fontWeight: 'bold',
-                      color: '#b45309',
-                    }}
-                  >
-                    {stats.chineseChars}
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    sx={{ color: '#78350f', fontSize: '11px' }}
-                  >
-                    字數
-                  </Typography>
-                </Box>
-                <Box>
-                  <Typography
-                    sx={{
-                      fontSize: '24px',
-                      fontWeight: 'bold',
-                      color: '#d97706',
-                    }}
-                  >
-                    {stats.chinesePunctuation}
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    sx={{ color: '#78350f', fontSize: '11px' }}
-                  >
-                    標點
-                  </Typography>
-                </Box>
+              <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', justifyContent: 'center' }}>
+                <Typography variant="caption" sx={{ color: '#92400e', fontWeight: 'bold', fontSize: '16px' }}>
+                  中文
+                </Typography>
+                <Typography sx={{ fontSize: '20px', fontWeight: 'bold', color: '#b45309' }}>
+                  {stats.chineseChars}
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#78350f', fontSize: '11px' }}>
+                  字
+                </Typography>
+                <Typography sx={{ fontSize: '20px', fontWeight: 'bold', color: '#d97706' }}>
+                  {stats.chinesePunctuation}
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#78350f', fontSize: '11px' }}>
+                  標點
+                </Typography>
               </Box>
             </Paper>
 
@@ -333,53 +302,22 @@ function App() {
                 borderRadius: 2,
               }}
             >
-              <Typography
-                variant="caption"
-                sx={{
-                  color: '#4c1d95',
-                  fontWeight: 'bold',
-                  fontSize: '12px',
-                  display: 'block',
-                  mb: 0.5,
-                }}
-              >
-                英文
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                <Box>
-                  <Typography
-                    sx={{
-                      fontSize: '24px',
-                      fontWeight: 'bold',
-                      color: '#7c3aed',
-                    }}
-                  >
-                    {stats.englishWords}
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    sx={{ color: '#5b21b6', fontSize: '11px' }}
-                  >
-                    單詞
-                  </Typography>
-                </Box>
-                <Box>
-                  <Typography
-                    sx={{
-                      fontSize: '24px',
-                      fontWeight: 'bold',
-                      color: '#a78bfa',
-                    }}
-                  >
-                    {stats.englishPunctuation}
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    sx={{ color: '#5b21b6', fontSize: '11px' }}
-                  >
-                    標點
-                  </Typography>
-                </Box>
+              <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', justifyContent: 'center' }}>
+                <Typography variant="caption" sx={{ color: '#4c1d95', fontWeight: 'bold', fontSize: '16px' }}>
+                  英文
+                </Typography>
+                <Typography sx={{ fontSize: '20px', fontWeight: 'bold', color: '#7c3aed' }}>
+                  {stats.englishWords}
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#5b21b6', fontSize: '11px' }}>
+                  詞
+                </Typography>
+                <Typography sx={{ fontSize: '20px', fontWeight: 'bold', color: '#a78bfa' }}>
+                  {stats.englishPunctuation}
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#5b21b6', fontSize: '11px' }}>
+                  標點
+                </Typography>
               </Box>
             </Paper>
 
@@ -393,33 +331,15 @@ function App() {
                 borderRadius: 2,
               }}
             >
-              <Typography
-                variant="caption"
-                sx={{
-                  color: '#064e3b',
-                  fontWeight: 'bold',
-                  fontSize: '12px',
-                  display: 'block',
-                  mb: 0.5,
-                }}
-              >
-                文章
-              </Typography>
-              <Box>
-                <Typography
-                  sx={{
-                    fontSize: '24px',
-                    fontWeight: 'bold',
-                    color: '#059669',
-                  }}
-                >
+              <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', justifyContent: 'center' }}>
+                <Typography variant="caption" sx={{ color: '#064e3b', fontWeight: 'bold', fontSize: '16px' }}>
+                  文章
+                </Typography>
+                <Typography sx={{ fontSize: '20px', fontWeight: 'bold', color: '#059669' }}>
                   {stats.totalLines}
                 </Typography>
-                <Typography
-                  variant="caption"
-                  sx={{ color: '#065f46', fontSize: '11px' }}
-                >
-                  總行數
+                <Typography variant="caption" sx={{ color: '#065f46', fontSize: '11px' }}>
+                  行
                 </Typography>
               </Box>
             </Paper>
