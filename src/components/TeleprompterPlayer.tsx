@@ -50,6 +50,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md')); // 768px 以下視為手機
+  const isNarrow = useMediaQuery('(max-width:1200px)'); // 1200px 以下隱藏文字
   
   const textRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -445,9 +446,11 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
       {/* 速度控制 */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <Speed sx={{ fontSize: '20px' }} />
-        <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-          速度
-        </Typography>
+        {!isNarrow && (
+          <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
+            速度
+          </Typography>
+        )}
         <Slider
           value={speed}
           onChange={(_, value) => setSpeed(value as number)}
@@ -499,9 +502,11 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
       {/* 字體大小控制 */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <FormatSize sx={{ fontSize: '20px' }} />
-        <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-          字體
-        </Typography>
+        {!isNarrow && (
+          <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
+            字體
+          </Typography>
+        )}
         <Slider
           value={fontSize}
           onChange={(_, value) => setFontSize(value as number)}
@@ -552,10 +557,12 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
 
       {/* 間隔寬度控制 */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <VerticalSplit sx={{ fontSize: '20px' }} />
-        <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-          間隔
-        </Typography>
+        <VerticalSplit sx={{ fontSize: '20px', mr: 0.5 }} />
+        {!isNarrow && (
+          <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
+            間隔
+          </Typography>
+        )}
         <Slider
           value={gapWidth}
           onChange={(_, value) => setGapWidth(value as number)}
@@ -607,9 +614,11 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
       {/* 段落分割控制 */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <Splitscreen sx={{ fontSize: '20px' }} />
-        <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-          分段
-        </Typography>
+        {!isNarrow && (
+          <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
+            分段
+          </Typography>
+        )}
         <Slider
           value={paragraphSplit}
           onChange={(_, value) => setParagraphSplit(value as number)}
@@ -658,7 +667,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         />
       </Box>
     </Box>
-  ), [speed, fontSize, gapWidth, paragraphSplit, isMobile]);
+  ), [speed, fontSize, gapWidth, paragraphSplit, isMobile, isNarrow]);
 
   return (
     <Box
@@ -698,7 +707,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
             sx={{
               backgroundColor: isPlaying ? '#ef4444' : '#22c55e',
               color: '#ffffff',
-              minWidth: isMobile ? '70px' : '80px',
+              minWidth: isNarrow ? '40px' : (isMobile ? '70px' : '80px'),
               height: '40px',
               fontSize: isMobile ? '13px' : '14px',
               fontWeight: 'bold',
@@ -707,7 +716,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
               },
             }}
           >
-            {isPlaying ? '⏸ 暫停' : '▶ 播放'}
+            {isNarrow ? (isPlaying ? '⏸' : '▶') : (isPlaying ? '⏸ 暫停' : '▶ 播放')}
           </Button>
         </Box>
 
@@ -719,11 +728,11 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           <Button
             variant="outlined"
             onClick={() => setSettingsOpen(true)}
-            startIcon={<Settings />}
+            startIcon={isNarrow ? undefined : <Settings />}
             sx={{
               color: '#ffffff',
               borderColor: 'rgba(255,255,255,0.3)',
-              minWidth: '70px',
+              minWidth: isNarrow ? '40px' : '70px',
               height: '40px',
               fontSize: '13px',
               '&:hover': {
@@ -732,7 +741,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
               },
             }}
           >
-            設定
+            {isNarrow ? <Settings /> : '設定'}
           </Button>
         )}
 
@@ -740,11 +749,11 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         <Button
           variant="outlined"
           onClick={onExit}
-          startIcon={<Close />}
+          startIcon={isNarrow ? undefined : <Close />}
           sx={{
             color: '#ffffff',
             borderColor: 'rgba(255,255,255,0.3)',
-            minWidth: isMobile ? '70px' : '80px',
+            minWidth: isNarrow ? '40px' : (isMobile ? '70px' : '80px'),
             height: '40px',
             fontSize: isMobile ? '13px' : '14px',
             position: isMobile ? 'static' : 'absolute',
@@ -755,7 +764,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
             },
           }}
         >
-          退出
+          {isNarrow ? <Close /> : '退出'}
         </Button>
       </Box>
 
