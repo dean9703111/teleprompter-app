@@ -117,4 +117,13 @@ describe('locate / relocate', () => {
     expect(readUpTo(end)).toMatch(/越精準$/);
     expect(readUpTo(reread)).toMatch(/學會下指令$/);
   });
+
+  it('畫面上看得到的標題，即使離目前位置很遠也能直接對上', () => {
+    const script = tokenize(`${SCRIPT}\n${SCRIPT}\n第三章總結與回顧`);
+    const heading = tokenize('第三章總結');
+    const headingEnd = script.length - 4;
+    expect(headingEnd).toBeGreaterThan(150);
+    expect(locate(script, heading, 0)).toBeNull();
+    expect(locate(script, heading, 0, [0, script.length])?.index).toBe(headingEnd);
+  });
 });

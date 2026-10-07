@@ -340,12 +340,18 @@ const pick = (script: Token[], query: Token[], similarities: Float32Array, from:
   return best;
 };
 
-export const locate = (script: Token[], spoken: Token[], cursor: number): Match | null => {
+// visible：畫面上看得到的 token 區間 [from, to)，整段都納入搜尋（標題、跳過的句子都能直接對上）
+export const locate = (
+  script: Token[],
+  spoken: Token[],
+  cursor: number,
+  visible?: [number, number],
+): Match | null => {
   if (spoken.length < MIN_QUERY_SIZE || !script.length) return null;
 
   const query = spoken.slice(-QUERY_SIZE);
-  const from = Math.max(0, cursor - LOOK_BEHIND);
-  const to = Math.min(script.length, cursor + 1 + LOOK_AHEAD);
+  const from = Math.max(0, Math.min(cursor - LOOK_BEHIND, visible?.[0] ?? Infinity));
+  const to = Math.min(script.length, Math.max(cursor + 1 + LOOK_AHEAD, visible?.[1] ?? 0));
   const match = pick(script, query, scan(script, query, from, to), from, cursor);
   if (match || query.length <= SHORT_QUERY_SIZE) return match;
 

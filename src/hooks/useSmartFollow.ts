@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Token } from '../utils/pinyinMatcher';
-import { createMotion, predictPosition, recordHeard, recordMatch, resetMotion } from '../utils/followMotion';
+import { createMotion, predictPosition, recordHeard, recordMatch, recordVoice, resetMotion } from '../utils/followMotion';
+import { createVoiceDetector, getRms } from '../utils/voiceActivity';
 
 type Matcher = typeof import('../utils/pinyinMatcher');
 
@@ -10,13 +11,28 @@ interface UseSmartFollowOptions {
   enabled: boolean;
   text: string;
   resolveCursor: (tokens: Token[]) => number;
+  // 畫面上看得到的 token 區間 [from, to)
+  resolveVisible: (tokens: Token[]) => [number, number] | null;
   onError: (message: string) => void;
 }
 
 const SPOKEN_BUFFER_SIZE = 40;
 const HEARD_LENGTH = 24;
 const RELOCATE_INTERVAL = 700;
-const RESTART_DELAY = 300;
+const RESTART_DELAY = 100;
+// Chrome 辨識一直講不停頓時，大約 17 秒（80 字）後就不再回傳結果，但仍顯示在聆聽（實測）；
+// 講話途中重開，新的一段約 6 秒後才有第一個結果（實測）。
+// 所以：明明在講話（麥克風 VOICE_RECENT 內聽得到人聲）卻 STALL_TIMEOUT 沒有新文字，就立刻重開；
+// 新的一段還沒出過結果時給它 NEW_SESSION_GRACE 慢慢接上，免得還沒恢復又被重開。
+// 辨識不到的這段期間，由 followMotion 依語速繼續推進
+const STALL_TIMEOUT = 2000;
+const VOICE_RECENT = 1000;
+const NEW_SESSION_GRACE = 10000;
+// 沒有音量偵測（拿不到麥克風串流）時，只能在完全沒有新文字這麼久後重開
+const FALLBACK_STALL_TIMEOUT = 5000;
+const METER_INTERVAL = 50;
+// network 錯誤常是暫時的，連續發生這麼多次（中間都沒有辨識結果）才放棄
+const MAX_NETWORK_RETRIES = 3;
 
 const ERROR_MESSAGES: Record<string, string> = {
   'not-allowed': '麥克風權限被拒絕，請在網址列允許使用麥克風',
@@ -43,14 +59,14 @@ const getRecognitionLang = (text: string) => {
   return navigator.language.toLowerCase().startsWith('zh') ? navigator.language : 'zh-TW';
 };
 
-export const useSmartFollow = ({ enabled, text, resolveCursor, onError }: UseSmartFollowOptions) => {
+export const useSmartFollow = ({ enabled, text, resolveCursor, resolveVisible, onError }: UseSmartFollowOptions) => {
   const [status, setStatus] = useState<FollowStatus>('idle');
   const [heard, setHeard] = useState('');
   const [similarity, setSimilarity] = useState<number | null>(null);
 
-  const callbacksRef = useRef({ resolveCursor, onError });
+  const callbacksRef = useRef({ resolveCursor, resolveVisible, onError });
   useEffect(() => {
-    callbacksRef.current = { resolveCursor, onError };
+    callbacksRef.current = { resolveCursor, resolveVisible, onError };
   });
 
   const tokensRef = useRef<Token[]>([]);
@@ -95,27 +111,65 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onError }: UseSma
 
     let active = true;
     let restartTimer: number | undefined;
+    let meterTimer: number | undefined;
+    let watchdogTimer: number | undefined;
+    let audioContext: AudioContext | null = null;
+    let stream: MediaStream | null = null;
+    let lastActivity = performance.now();
+    let sessionStart = performance.now();
+    // 目前這一段是否已經回傳過結果
+    let sessionHeard = false;
+    let lastVoiceAt = 0;
+    // 換段的時間點；新的一段回傳第一個結果後清掉
+    let switchAt: number | null = null;
+    let lastTranscript = '';
+    let interim = '';
+    let interimTokens: Token[] = [];
+    let networkErrors = 0;
+    // 目前這一段辨識；每段都用新的物件，舊的那段被換掉後送來的事件一律忽略
     let recognition: SpeechRecognition | null = null;
+    let startSession = () => {};
 
     const fail = (message: string) => {
       active = false;
       callbacksRef.current.onError(message);
     };
 
-    const start = () => {
-      try {
-        recognition?.start();
-      } catch {
-        // 已在辨識中
-      }
+    // 只保留一個待執行的重啟
+    const scheduleStart = () => {
+      window.clearTimeout(restartTimer);
+      restartTimer = window.setTimeout(() => startSession(), RESTART_DELAY);
+    };
+
+    // 把還沒定案的內容當成定案，丟掉目前這段辨識，開新的一段
+    const replaceSession = (reason: string) => {
+      const old = recognition;
+      if (!old) return;
+      console.debug(`[smart-follow] ${reason}`);
+      switchAt = performance.now();
+      spokenRef.current = spokenRef.current.concat(interimTokens).slice(-SPOKEN_BUFFER_SIZE);
+      heardRef.current = (heardRef.current + interim).slice(-HEARD_LENGTH);
+      interim = '';
+      interimTokens = [];
+      lastActivity = performance.now();
+      recognition = null;
+      recognitionRef.current = null;
+      old.abort();
+      scheduleStart();
     };
 
     const handleResult = (matcher: Matcher, event: SpeechRecognitionEvent) => {
       const now = performance.now();
+      networkErrors = 0;
       const motion = motionRef.current;
       recordHeard(motion, now);
+      sessionHeard = true;
+      if (switchAt !== null) {
+        console.debug(`[smart-follow] 換段後第一個辨識結果：${Math.round(now - switchAt)} ms`);
+        switchAt = null;
+      }
 
-      let interim = '';
+      interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const transcript = result[0]?.transcript ?? '';
@@ -126,11 +180,20 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onError }: UseSma
           interim += transcript;
         }
       }
+      interimTokens = matcher.tokenize(interim);
       setHeard((heardRef.current + interim).slice(-HEARD_LENGTH));
 
+      // 只有文字真的有變才算有在辨識，避免卡住時重複送出同樣的結果
+      const transcript = heardRef.current + interim;
+      if (transcript !== lastTranscript) {
+        lastTranscript = transcript;
+        lastActivity = now;
+      }
+
       const tokens = tokensRef.current;
-      const spoken = spokenRef.current.concat(matcher.tokenize(interim));
-      let match = matcher.locate(tokens, spoken, motion.index);
+      const spoken = spokenRef.current.concat(interimTokens);
+      const visible = callbacksRef.current.resolveVisible(tokens) ?? undefined;
+      let match = matcher.locate(tokens, spoken, motion.index, visible);
 
       if (!match && now - lastRelocateRef.current > RELOCATE_INTERVAL) {
         lastRelocateRef.current = now;
@@ -142,6 +205,34 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onError }: UseSma
       recordMatch(motion, match.index, now);
     };
 
+    // 麥克風音量：判斷有沒有在講話；拿不到串流時退回只看辨識結果
+    const startMeter = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        return;
+      }
+      if (!active) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      audioContext = new AudioContext();
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      audioContext.createMediaStreamSource(stream).connect(analyser);
+      const samples = new Float32Array(analyser.fftSize);
+      const isVoice = createVoiceDetector();
+
+      meterTimer = window.setInterval(() => {
+        const now = performance.now();
+        analyser.getFloatTimeDomainData(samples);
+        if (isVoice(getRms(samples))) {
+          lastVoiceAt = now;
+          recordVoice(motionRef.current, now);
+        }
+      }, METER_INTERVAL);
+    };
+
     setStatus('starting');
     loadMatcher().then(
       (matcher) => {
@@ -150,26 +241,71 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onError }: UseSma
         readyRef.current = true;
         anchor();
 
-        recognition = new Recognition();
-        recognition.lang = getRecognitionLang(text);
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 1;
-        recognition.onstart = () => setStatus('listening');
-        recognition.onresult = (event) => handleResult(matcher, event);
-        recognition.onerror = (event) => {
-          const message = ERROR_MESSAGES[event.error];
-          if (message) fail(message);
+        startSession = () => {
+          if (!active || recognition) return;
+          sessionStart = performance.now();
+          sessionHeard = false;
+          const current = new Recognition();
+          const isCurrent = () => active && recognition === current;
+
+          current.lang = getRecognitionLang(text);
+          current.continuous = true;
+          current.interimResults = true;
+          current.maxAlternatives = 1;
+          current.onstart = () => {
+            if (!isCurrent()) return;
+            lastActivity = sessionStart = performance.now();
+            console.debug(
+              switchAt === null ? '[smart-follow] 開始辨識' : `[smart-follow] 開始辨識（換段後 ${Math.round(sessionStart - switchAt)} ms）`,
+            );
+            setStatus('listening');
+          };
+          current.onresult = (event) => {
+            if (isCurrent()) handleResult(matcher, event);
+          };
+          current.onerror = (event) => {
+            if (!isCurrent()) return;
+            console.debug('[smart-follow] 辨識錯誤', event.error);
+            // 暫時性的 network 錯誤交給 onend 重啟
+            if (event.error === 'network' && ++networkErrors < MAX_NETWORK_RETRIES) return;
+            const message = ERROR_MESSAGES[event.error];
+            if (message) fail(message);
+          };
+          // Chrome 靜音一陣子或約一分鐘就會結束，接續開新的一段（短暫重開不切換狀態，避免閃爍）
+          current.onend = () => {
+            if (!isCurrent()) return;
+            console.debug('[smart-follow] 辨識結束');
+            switchAt = performance.now();
+            recognition = null;
+            recognitionRef.current = null;
+            scheduleStart();
+          };
+
+          recognition = current;
+          recognitionRef.current = current;
+          try {
+            current.start();
+          } catch {
+            recognition = null;
+            recognitionRef.current = null;
+            scheduleStart();
+          }
         };
-        // Chrome 靜音一陣子或約一分鐘就會自動結束，需要接續重啟
-        recognition.onend = () => {
-          if (!active) return;
-          restartTimer = window.setTimeout(() => {
-            if (active) start();
-          }, RESTART_DELAY);
-        };
-        recognitionRef.current = recognition;
-        start();
+
+        startSession();
+        startMeter();
+
+        watchdogTimer = window.setInterval(() => {
+          if (!recognition) return;
+          const now = performance.now();
+          if (!sessionHeard) {
+            if (now - sessionStart > NEW_SESSION_GRACE) replaceSession('新的一段一直沒有辨識結果，重新啟動');
+            return;
+          }
+          const speaking = audioContext ? now - lastVoiceAt < VOICE_RECENT : true;
+          const timeout = audioContext ? STALL_TIMEOUT : FALLBACK_STALL_TIMEOUT;
+          if (speaking && now - lastActivity > timeout) replaceSession('沒有新的辨識文字，重新啟動');
+        }, 250);
       },
       () => fail('拼音模組載入失敗，請重新整理頁面'),
     );
@@ -178,11 +314,12 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onError }: UseSma
       active = false;
       readyRef.current = false;
       window.clearTimeout(restartTimer);
+      window.clearInterval(meterTimer);
+      window.clearInterval(watchdogTimer);
+      stream?.getTracks().forEach((track) => track.stop());
+      audioContext?.close();
       recognitionRef.current = null;
-      if (recognition) {
-        recognition.onend = null;
-        recognition.abort();
-      }
+      recognition?.abort();
       setStatus('idle');
     };
   }, [enabled, text, anchor]);

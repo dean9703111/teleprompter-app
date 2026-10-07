@@ -18,6 +18,7 @@ import {
   Settings,
   Mic,
   AlignVerticalTop,
+  Highlight as HighlightIcon,
 } from '@mui/icons-material';
 import SettingSlider from './SettingSlider';
 import { useSmartFollow } from '../hooks/useSmartFollow';
@@ -66,6 +67,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     const saved = localStorage.getItem('teleprompter-followAnchor');
     return saved ? parseInt(saved) : 25;
   });
+  const [followHighlight, setFollowHighlight] = useState(() => localStorage.getItem('teleprompter-followHighlight') !== '0');
   
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md')); // 768px 以下視為手機
@@ -105,6 +107,16 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   useEffect(() => {
     localStorage.setItem('teleprompter-followAnchor', followAnchor.toString());
   }, [followAnchor]);
+
+  // 關閉高亮時清掉現有高亮；重新開啟時下一幀重畫
+  useEffect(() => {
+    localStorage.setItem('teleprompter-followHighlight', followHighlight ? '1' : '0');
+    shownIndexRef.current = NaN;
+    if (!followHighlight && supportsHighlight) {
+      CSS.highlights.delete(READ_HIGHLIGHT);
+      CSS.highlights.delete(NEXT_HIGHLIGHT);
+    }
+  }, [followHighlight]);
 
   // 計算總高度和進度
   const calculateProgress = useCallback(() => {
@@ -186,26 +198,38 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     }
   }, [getCharIndex]);
 
-  // 以畫面上「跟讀線」所在那一行為起點，回傳它前一個 token
-  const resolveFollowCursor = useCallback((tokens: Token[]) => {
-    const container = containerRef.current;
-    if (!container || !tokens.length) return -1;
-
+  // 底部在畫面座標 y 之上的 token 數量
+  const countTokensAbove = useCallback((tokens: Token[], y: number) => {
     const index = getCharIndex();
-    const anchorY = container.getBoundingClientRect().top + (container.clientHeight * followAnchor) / 100;
     let lo = 0;
     let hi = tokens.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
       const rect = createCharRange(index, tokens[mid].start, tokens[mid].start + 1)?.getBoundingClientRect();
-      if (rect && rect.bottom <= anchorY) {
+      if (rect && rect.bottom <= y) {
         lo = mid + 1;
       } else {
         hi = mid;
       }
     }
-    return lo - 1;
-  }, [getCharIndex, followAnchor]);
+    return lo;
+  }, [getCharIndex]);
+
+  // 以畫面上「跟讀線」所在那一行為起點，回傳它前一個 token
+  const resolveFollowCursor = useCallback((tokens: Token[]) => {
+    const container = containerRef.current;
+    if (!container || !tokens.length) return -1;
+    const anchorY = container.getBoundingClientRect().top + (container.clientHeight * followAnchor) / 100;
+    return countTokensAbove(tokens, anchorY) - 1;
+  }, [countTokensAbove, followAnchor]);
+
+  // 畫面上看得到的 token 區間，整段都能直接比對
+  const resolveFollowVisible = useCallback((tokens: Token[]): [number, number] | null => {
+    const container = containerRef.current;
+    if (!container || !tokens.length) return null;
+    const { top, bottom } = container.getBoundingClientRect();
+    return [countTokensAbove(tokens, top), countTokensAbove(tokens, bottom)];
+  }, [countTokensAbove]);
 
   const handleFollowError = useCallback((message: string) => {
     setFollowError(message);
@@ -216,6 +240,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     enabled: isFollowing,
     text,
     resolveCursor: resolveFollowCursor,
+    resolveVisible: resolveFollowVisible,
     onError: handleFollowError,
   });
   const { reanchor: reanchorFollow, predict: predictFollow, getTokens: getFollowTokens } = follow;
@@ -229,7 +254,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
       if (!container || position === null || !tokens.length) return;
 
       const shown = Math.floor(position);
-      if (shown !== shownIndexRef.current) {
+      if (followHighlight && shown !== shownIndexRef.current) {
         shownIndexRef.current = shown;
         highlightFollow(tokens, shown);
       }
@@ -638,16 +663,30 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     <Box sx={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 3 : 2, width: isMobile ? '100%' : 'auto' }}>
       {/* 速度控制（跟讀時換成跟讀位置，自動捲動速度用不到） */}
       {isFollowing ? (
-        <SettingSlider
-          icon={<AlignVerticalTop sx={{ fontSize: '20px' }} />}
-          label="位置"
-          value={followAnchor}
-          min={FOLLOW_ANCHOR_MIN}
-          max={FOLLOW_ANCHOR_MAX}
-          onChange={setFollowAnchor}
-          isMobile={isMobile}
-          showLabel={!isNarrow}
-        />
+        <>
+          <SettingSlider
+            icon={<AlignVerticalTop sx={{ fontSize: '20px' }} />}
+            label="位置"
+            value={followAnchor}
+            min={FOLLOW_ANCHOR_MIN}
+            max={FOLLOW_ANCHOR_MAX}
+            onChange={setFollowAnchor}
+            isMobile={isMobile}
+            showLabel={!isNarrow}
+          />
+          {/* 跟讀高亮開關 */}
+          <IconButton
+            onClick={() => setFollowHighlight(prev => !prev)}
+            title={followHighlight ? '關閉跟讀高亮' : '開啟跟讀高亮'}
+            sx={{
+              alignSelf: isMobile ? 'flex-start' : 'center',
+              color: followHighlight ? '#fde047' : (isMobile ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)'),
+              backgroundColor: followHighlight && isMobile ? '#1e293b' : 'transparent',
+            }}
+          >
+            <HighlightIcon sx={{ fontSize: '20px' }} />
+          </IconButton>
+        </>
       ) : (
         <SettingSlider
           icon={<Speed sx={{ fontSize: '20px' }} />}
@@ -697,7 +736,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         showLabel={!isNarrow}
       />
     </Box>
-  ), [speed, fontSize, gapWidth, paragraphSplit, isMobile, isNarrow, isFollowing, followAnchor]);
+  ), [speed, fontSize, gapWidth, paragraphSplit, isMobile, isNarrow, isFollowing, followAnchor, followHighlight]);
 
   return (
     <Box
