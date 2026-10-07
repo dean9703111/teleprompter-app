@@ -31,7 +31,7 @@ function App() {
     const englishWords = (text.match(/[a-zA-Z]+/g) || []).length;
     
     // 英文標點符號
-    const englishPunctuation = (text.match(/[.,!?;:'"()\-]/g) || []).length;
+    const englishPunctuation = (text.match(/[.,!?;:'"()-]/g) || []).length;
     
     // 總行數
     const totalLines = text ? text.split('\n').length : 0;

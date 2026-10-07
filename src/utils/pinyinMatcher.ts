@@ -3,6 +3,8 @@ import { isSignificant } from './textIndex';
 
 export interface Token {
   key: string;
+  // 破音字的其他讀音（已套用模糊音）
+  alts?: string[];
   latin: boolean;
   // 對應原文「有效字元」序號區間 [start, end)
   start: number;
@@ -56,6 +58,17 @@ const NUMBER_PINYIN: Record<string, string> = {
 
 // 台灣口音常見的捲舌 / 後鼻音不分：zh→z、ch→c、sh→s、ing→in、eng→en
 const fuzzy = (syllable: string) => syllable.replace(/^([zcs])h/, '$1').replace(/([ie])ng$/, '$1n');
+
+const readingsCache = new Map<string, string[]>();
+
+const getReadings = (ch: string) => {
+  let readings = readingsCache.get(ch);
+  if (!readings) {
+    readings = [...new Set(pinyin(ch, { multiple: true, type: 'array', toneType: 'none' }).map(fuzzy))];
+    readingsCache.set(ch, readings);
+  }
+  return readings;
+};
 
 const readDigits = (digits: string) => [...digits].map((d) => CN_DIGITS[Number(d)]).join('');
 
@@ -126,9 +139,12 @@ export const tokenize = (text: string): Token[] => {
 
   const flushHan = () => {
     if (!hanRun) return;
+    const runChars = Array.from(hanRun);
     const syllables = pinyin(hanRun, { toneType: 'none', type: 'array' });
     hanOrdinals.forEach((start, i) => {
-      tokens.push({ key: fuzzy(syllables[i] ?? ''), latin: false, start, end: start + 1 });
+      const key = fuzzy(syllables[i] ?? '');
+      const alts = getReadings(runChars[i]).filter((reading) => reading !== key);
+      tokens.push({ key, ...(alts.length && { alts }), latin: false, start, end: start + 1 });
     });
     hanRun = '';
     hanOrdinals = [];
@@ -251,6 +267,12 @@ const tokenCost = (a: string, b: string) => {
   return prev[lb] / Math.max(la, lb);
 };
 
+// 任一讀音相同就算對上（銀行 xing/hang、長大 chang/zhang）
+const pairCost = (a: Token, b: Token) => {
+  if (a.key === b.key || b.alts?.includes(a.key) || a.alts?.includes(b.key)) return 0;
+  return tokenCost(a.key, b.key);
+};
+
 // 半全域對齊：query 必須整段對上，稿子可以從任意位置開始；回傳「query 結尾落在稿子每個位置」的相似度
 const scan = (script: Token[], query: Token[], from: number, to: number) => {
   const m = query.length;
@@ -267,7 +289,7 @@ const scan = (script: Token[], query: Token[], from: number, to: number) => {
 
     for (let j = 1; j <= n; j++) {
       const t = script[from + j - 1];
-      let best = Math.min(prev[j - 1] + tokenCost(q.key, t.key), prev[j] + 1, cur[j - 1] + 1);
+      let best = Math.min(prev[j - 1] + pairCost(q, t), prev[j] + 1, cur[j - 1] + 1);
 
       // 英文允許 2:1 合併，讓 ChatGPT ↔ chat GPT、YouTube ↔ you tube 對得上
       if (q.latin && t.latin) {
@@ -288,7 +310,7 @@ const scan = (script: Token[], query: Token[], from: number, to: number) => {
 
 // 最後念出的字要能對上該位置，否則脫稿的第一個字會把位置往前拖
 const endsAt = (last: Token, target: Token) => {
-  if (tokenCost(last.key, target.key) <= 0.5) return true;
+  if (pairCost(last, target) <= 0.5) return true;
   return last.latin && target.latin && (target.key.endsWith(last.key) || last.key.endsWith(target.key));
 };
 

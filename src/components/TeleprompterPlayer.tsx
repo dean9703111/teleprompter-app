@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   Box,
   Button,
-  Slider,
-  TextField,
   Typography,
   LinearProgress,
   Drawer,
@@ -21,14 +19,17 @@ import {
   Mic,
   AlignVerticalTop,
 } from '@mui/icons-material';
-import { useSmartFollow, type FollowReason } from '../hooks/useSmartFollow';
+import SettingSlider from './SettingSlider';
+import { useSmartFollow } from '../hooks/useSmartFollow';
 import type { Token } from '../utils/pinyinMatcher';
-import { buildCharIndex, createCharRange, type CharPosition } from '../utils/textIndex';
+import { buildCharIndex, createCharRange, createReadingLine, type CharPosition } from '../utils/textIndex';
 
-const FOLLOW_EASING = 0.1;
+const FOLLOW_EASING = 0.15;
 const FOLLOW_ANCHOR_MIN = 10;
 const FOLLOW_ANCHOR_MAX = 60;
 const READ_HIGHLIGHT = 'teleprompter-read';
+const NEXT_HIGHLIGHT = 'teleprompter-next';
+const NEXT_CUE_SIZE = 2;
 const supportsHighlight = typeof CSS !== 'undefined' && 'highlights' in CSS;
 
 interface TeleprompterPlayerProps {
@@ -78,8 +79,10 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const measureSpanRef = useRef<HTMLSpanElement | null>(null);
   const pillarBoxRef = useRef<HTMLDivElement>(null);
   const charIndexRef = useRef<CharPosition[] | null>(null);
-  const followTargetRef = useRef<number | null>(null);
-  const followFrameRef = useRef<number | undefined>(undefined);
+  const readingLineRef = useRef<{ tokens: Token[]; at: ReturnType<typeof createReadingLine> } | null>(null);
+  const shownIndexRef = useRef(NaN);
+  const manualScrollRef = useRef(false);
+  const followFrameRef = useRef<() => void>(() => {});
   const reanchorTimerRef = useRef<number | undefined>(undefined);
 
   // 儲存設定到 localStorage
@@ -134,57 +137,52 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     }
     const index = containerRef.current ? buildCharIndex(containerRef.current) : [];
     charIndexRef.current = index;
+    readingLineRef.current = null;
     return index;
   }, []);
 
-  const stepFollowScroll = useCallback(() => {
+  // 排版改變（字體、分欄、分段、視窗大小）後重新量測
+  const invalidateFollowLayout = useCallback(() => {
+    charIndexRef.current = null;
+    readingLineRef.current = null;
+    shownIndexRef.current = NaN;
+  }, []);
+
+  const getReadingLine = useCallback((tokens: Token[]) => {
     const container = containerRef.current;
-    const target = followTargetRef.current;
-    if (!container || target === null) {
-      followFrameRef.current = undefined;
-      return;
+    if (!container) return null;
+    const index = getCharIndex();
+    if (readingLineRef.current?.tokens !== tokens) {
+      const measureCenter = (i: number) => {
+        const rect = createCharRange(index, tokens[i].start, tokens[i].start + 1)?.getBoundingClientRect();
+        if (!rect) return null;
+        return rect.top + rect.height / 2 - container.getBoundingClientRect().top + container.scrollTop;
+      };
+      readingLineRef.current = { tokens, at: createReadingLine(tokens.length, measureCenter, fontSize * 1.4) };
     }
+    return readingLineRef.current.at;
+  }, [getCharIndex, fontSize]);
 
-    const before = container.scrollTop;
-    const diff = target - before;
-    if (Math.abs(diff) < 1) {
-      container.scrollTop = target;
-      followTargetRef.current = null;
-    } else {
-      container.scrollTop = before + Math.sign(diff) * Math.max(1, Math.abs(diff) * FOLLOW_EASING);
-    }
-    calculateProgress();
-
-    if (followTargetRef.current === null || container.scrollTop === before) {
-      followTargetRef.current = null;
-      followFrameRef.current = undefined;
-      return;
-    }
-    followFrameRef.current = requestAnimationFrame(stepFollowScroll);
-  }, [calculateProgress]);
-
-  const scrollFollowTo = useCallback((token: Token) => {
-    const container = containerRef.current;
-    const rect = createCharRange(getCharIndex(), token.start, token.start + 1)?.getBoundingClientRect();
-    if (!container || !rect) return;
-
-    const lineCenter = rect.top + rect.height / 2 - container.getBoundingClientRect().top + container.scrollTop;
-    const maxScroll = container.scrollHeight - container.clientHeight;
-    const target = lineCenter - (container.clientHeight * followAnchor) / 100;
-    followTargetRef.current = Math.max(0, Math.min(maxScroll, target));
-    if (followFrameRef.current === undefined) {
-      followFrameRef.current = requestAnimationFrame(stepFollowScroll);
-    }
-  }, [getCharIndex, stepFollowScroll, followAnchor]);
-
-  // 已念過的文字變暗（CSS Custom Highlight API，不動 DOM）
-  const highlightRead = useCallback((token: Token | undefined) => {
+  // 已念過的文字變暗、接下來要念的字標亮色（CSS Custom Highlight API，不動 DOM）
+  const highlightFollow = useCallback((tokens: Token[], shown: number) => {
     if (!supportsHighlight) return;
-    const range = token ? createCharRange(getCharIndex(), 0, token.end) : null;
-    if (range) {
-      CSS.highlights.set(READ_HIGHLIGHT, new Highlight(range));
+    const index = getCharIndex();
+    const read = tokens[shown] ? createCharRange(index, 0, tokens[shown].end) : null;
+    const nextFirst = tokens[shown + 1];
+    const nextLast = tokens[Math.min(tokens.length - 1, shown + NEXT_CUE_SIZE)];
+    const next = nextFirst && nextLast ? createCharRange(index, nextFirst.start, nextLast.end) : null;
+
+    if (read) {
+      CSS.highlights.set(READ_HIGHLIGHT, new Highlight(read));
     } else {
       CSS.highlights.delete(READ_HIGHLIGHT);
+    }
+    if (next) {
+      const cue = new Highlight(next);
+      cue.priority = 1;
+      CSS.highlights.set(NEXT_HIGHLIGHT, cue);
+    } else {
+      CSS.highlights.delete(NEXT_HIGHLIGHT);
     }
   }, [getCharIndex]);
 
@@ -209,12 +207,6 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     return lo - 1;
   }, [getCharIndex, followAnchor]);
 
-  const handleFollowCursor = useCallback((index: number, tokens: Token[], reason: FollowReason) => {
-    const token = tokens[index];
-    highlightRead(token);
-    if (token && reason !== 'anchor') scrollFollowTo(token);
-  }, [highlightRead, scrollFollowTo]);
-
   const handleFollowError = useCallback((message: string) => {
     setFollowError(message);
     setIsFollowing(false);
@@ -224,10 +216,37 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     enabled: isFollowing,
     text,
     resolveCursor: resolveFollowCursor,
-    onCursorChange: handleFollowCursor,
     onError: handleFollowError,
   });
-  const { reanchor: reanchorFollow, refresh: refreshFollow } = follow;
+  const { reanchor: reanchorFollow, predict: predictFollow, getTokens: getFollowTokens } = follow;
+
+  // 每一幀：依推估位置連續捲動，位置跨到下一個字時更新高亮
+  useEffect(() => {
+    followFrameRef.current = () => {
+      const container = containerRef.current;
+      const position = predictFollow(performance.now());
+      const tokens = getFollowTokens();
+      if (!container || position === null || !tokens.length) return;
+
+      const shown = Math.floor(position);
+      if (shown !== shownIndexRef.current) {
+        shownIndexRef.current = shown;
+        highlightFollow(tokens, shown);
+      }
+
+      if (manualScrollRef.current || position < 0) return;
+      const y = getReadingLine(tokens)?.(position);
+      if (y == null) return;
+
+      const maxScroll = container.scrollHeight - container.clientHeight;
+      const target = Math.max(0, Math.min(maxScroll, y - (container.clientHeight * followAnchor) / 100));
+      const diff = target - container.scrollTop;
+      if (Math.abs(diff) < 1) return;
+      const step = diff * FOLLOW_EASING;
+      container.scrollTop += Math.abs(step) < 1 ? Math.sign(diff) : step;
+      calculateProgress();
+    };
+  });
 
   const toggleFollow = useCallback(() => {
     if (!isFollowing) {
@@ -237,10 +256,14 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     setIsFollowing(!isFollowing);
   }, [isFollowing]);
 
+  // 使用者手動捲動時先停止自動捲動，停手後以畫面位置重新定位
   const scheduleReanchor = useCallback(() => {
-    followTargetRef.current = null;
+    manualScrollRef.current = true;
     window.clearTimeout(reanchorTimerRef.current);
-    reanchorTimerRef.current = window.setTimeout(reanchorFollow, 300);
+    reanchorTimerRef.current = window.setTimeout(() => {
+      reanchorFollow();
+      manualScrollRef.current = false;
+    }, 300);
   }, [reanchorFollow]);
 
   // 手機觸控捲動也要重新定位
@@ -251,15 +274,22 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     return () => container.removeEventListener('touchmove', scheduleReanchor);
   }, [isFollowing, scheduleReanchor]);
 
-  // 關閉跟讀或離開時清掉高亮與捲動
+  // 跟讀期間持續跑 frame loop；關閉跟讀或離開時清掉高亮
   useEffect(() => {
     if (!isFollowing) return;
+    let frame = requestAnimationFrame(function tick() {
+      followFrameRef.current();
+      frame = requestAnimationFrame(tick);
+    });
     return () => {
-      followTargetRef.current = null;
-      if (followFrameRef.current !== undefined) cancelAnimationFrame(followFrameRef.current);
-      followFrameRef.current = undefined;
+      cancelAnimationFrame(frame);
+      manualScrollRef.current = false;
+      shownIndexRef.current = NaN;
       window.clearTimeout(reanchorTimerRef.current);
-      if (supportsHighlight) CSS.highlights.delete(READ_HIGHLIGHT);
+      if (supportsHighlight) {
+        CSS.highlights.delete(READ_HIGHLIGHT);
+        CSS.highlights.delete(NEXT_HIGHLIGHT);
+      }
     };
   }, [isFollowing]);
 
@@ -568,11 +598,10 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   // 同一個物件 React 才不會每次 render 都重設 innerHTML
   const pillarHtml = useMemo(() => ({ __html: renderedLinesHtml }), [renderedLinesHtml]);
 
-  // 排版改變後，跟讀高亮與位置重新對齊
+  // 排版改變後，跟讀高亮與位置重新量測
   useEffect(() => {
-    charIndexRef.current = null;
-    refreshFollow();
-  }, [processedText, renderedLinesHtml, gapWidth, fontSize, followAnchor, refreshFollow]);
+    invalidateFollowLayout();
+  }, [processedText, renderedLinesHtml, gapWidth, fontSize, invalidateFollowLayout]);
 
   // 監聽視窗大小變化，重新計算排版（防抖處理）
   useEffect(() => {
@@ -583,6 +612,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         if (gapWidth > 0) {
           renderLinesWithPillar();
         }
+        invalidateFollowLayout();
         // 重新計算預計時間
         calculateProgress();
       }, 100);
@@ -593,7 +623,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
       window.removeEventListener('resize', handleResize);
       clearTimeout(resizeTimer);
     };
-  }, [gapWidth, renderLinesWithPillar, calculateProgress]);
+  }, [gapWidth, renderLinesWithPillar, calculateProgress, invalidateFollowLayout]);
 
   // 初始計算預計時間
   useEffect(() => {
@@ -607,230 +637,65 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const settingsControls = useMemo(() => (
     <Box sx={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 3 : 2, width: isMobile ? '100%' : 'auto' }}>
       {/* 速度控制（跟讀時換成跟讀位置，自動捲動速度用不到） */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        {isFollowing ? <AlignVerticalTop sx={{ fontSize: '20px' }} /> : <Speed sx={{ fontSize: '20px' }} />}
-        {!isNarrow && (
-          <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-            {isFollowing ? '位置' : '速度'}
-          </Typography>
-        )}
-        <Slider
-          value={isFollowing ? followAnchor : speed}
-          onChange={(_, value) => (isFollowing ? setFollowAnchor : setSpeed)(value as number)}
-          min={isFollowing ? FOLLOW_ANCHOR_MIN : 1}
-          max={isFollowing ? FOLLOW_ANCHOR_MAX : 20}
-          sx={{
-            flex: 1,
-            minWidth: isMobile ? 'auto' : '60px',
-            marginRight: isMobile ? '12px' : '8px',
-            color: '#2563eb',
-            '& .MuiSlider-track': {
-              backgroundColor: '#2563eb',
-            },
-            '& .MuiSlider-rail': {
-              backgroundColor: '#e2e8f0',
-            },
-          }}
+      {isFollowing ? (
+        <SettingSlider
+          icon={<AlignVerticalTop sx={{ fontSize: '20px' }} />}
+          label="位置"
+          value={followAnchor}
+          min={FOLLOW_ANCHOR_MIN}
+          max={FOLLOW_ANCHOR_MAX}
+          onChange={setFollowAnchor}
+          isMobile={isMobile}
+          showLabel={!isNarrow}
         />
-        <TextField
-          value={isFollowing ? followAnchor : speed}
-          onChange={(e) => {
-            const value = parseInt(e.target.value);
-            if (isFollowing) {
-              if (value >= FOLLOW_ANCHOR_MIN && value <= FOLLOW_ANCHOR_MAX) setFollowAnchor(value);
-            } else if (value >= 1 && value <= 20) {
-              setSpeed(value);
-            }
-          }}
-          size="small"
-          sx={{
-            width: '60px',
-            '& .MuiOutlinedInput-root': {
-              height: '36px',
-              fontSize: '14px',
-              color: isMobile ? '#000000' : '#ffffff',
-              backgroundColor: isMobile ? '#ffffff' : 'rgba(255,255,255,0.1)',
-              '& fieldset': {
-                borderColor: isMobile ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
-              },
-              '&:hover fieldset': {
-                borderColor: isMobile ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
-              },
-              '&.Mui-focused fieldset': {
-                borderColor: '#2563eb',
-              },
-            },
-          }}
+      ) : (
+        <SettingSlider
+          icon={<Speed sx={{ fontSize: '20px' }} />}
+          label="速度"
+          value={speed}
+          min={1}
+          max={20}
+          onChange={setSpeed}
+          isMobile={isMobile}
+          showLabel={!isNarrow}
         />
-      </Box>
+      )}
 
       {/* 字體大小控制 */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <FormatSize sx={{ fontSize: '20px' }} />
-        {!isNarrow && (
-          <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-            字體
-          </Typography>
-        )}
-        <Slider
-          value={fontSize}
-          onChange={(_, value) => setFontSize(value as number)}
-          min={35}
-          max={100}
-          sx={{
-            flex: 1,
-            minWidth: isMobile ? 'auto' : '60px',
-            marginRight: isMobile ? '12px' : '8px',
-            color: '#2563eb',
-            '& .MuiSlider-track': {
-              backgroundColor: '#2563eb',
-            },
-            '& .MuiSlider-rail': {
-              backgroundColor: '#e2e8f0',
-            },
-          }}
-        />
-        <TextField
-          value={fontSize}
-          onChange={(e) => {
-            const value = parseInt(e.target.value);
-            if (value >= 35 && value <= 100) {
-              setFontSize(value);
-            }
-          }}
-          size="small"
-          sx={{
-            width: '60px',
-            '& .MuiOutlinedInput-root': {
-              height: '36px',
-              fontSize: '14px',
-              color: isMobile ? '#000000' : '#ffffff',
-              backgroundColor: isMobile ? '#ffffff' : 'rgba(255,255,255,0.1)',
-              '& fieldset': {
-                borderColor: isMobile ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
-              },
-              '&:hover fieldset': {
-                borderColor: isMobile ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
-              },
-              '&.Mui-focused fieldset': {
-                borderColor: '#2563eb',
-              },
-            },
-          }}
-        />
-      </Box>
+      <SettingSlider
+        icon={<FormatSize sx={{ fontSize: '20px' }} />}
+        label="字體"
+        value={fontSize}
+        min={35}
+        max={100}
+        onChange={setFontSize}
+        isMobile={isMobile}
+        showLabel={!isNarrow}
+      />
 
       {/* 間隔寬度控制 */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <VerticalSplit sx={{ fontSize: '20px', mr: 0.5 }} />
-        {!isNarrow && (
-          <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-            間隔
-          </Typography>
-        )}
-        <Slider
-          value={gapWidth}
-          onChange={(_, value) => setGapWidth(value as number)}
-          min={0}
-          max={30}
-          sx={{
-            flex: 1,
-            minWidth: isMobile ? 'auto' : '60px',
-            marginRight: isMobile ? '12px' : '8px',
-            color: '#2563eb',
-            '& .MuiSlider-track': {
-              backgroundColor: '#2563eb',
-            },
-            '& .MuiSlider-rail': {
-              backgroundColor: '#e2e8f0',
-            },
-          }}
-        />
-        <TextField
-          value={gapWidth}
-          onChange={(e) => {
-            const value = parseInt(e.target.value);
-            if (value >= 0 && value <= 30) {
-              setGapWidth(value);
-            }
-          }}
-          size="small"
-          sx={{
-            width: '60px',
-            '& .MuiOutlinedInput-root': {
-              height: '36px',
-              fontSize: '14px',
-              color: isMobile ? '#000000' : '#ffffff',
-              backgroundColor: isMobile ? '#ffffff' : 'rgba(255,255,255,0.1)',
-              '& fieldset': {
-                borderColor: isMobile ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
-              },
-              '&:hover fieldset': {
-                borderColor: isMobile ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
-              },
-              '&.Mui-focused fieldset': {
-                borderColor: '#2563eb',
-              },
-            },
-          }}
-        />
-      </Box>
+      <SettingSlider
+        icon={<VerticalSplit sx={{ fontSize: '20px', mr: 0.5 }} />}
+        label="間隔"
+        value={gapWidth}
+        min={0}
+        max={30}
+        onChange={setGapWidth}
+        isMobile={isMobile}
+        showLabel={!isNarrow}
+      />
 
       {/* 段落分割控制 */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Splitscreen sx={{ fontSize: '20px' }} />
-        {!isNarrow && (
-          <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-            分段
-          </Typography>
-        )}
-        <Slider
-          value={paragraphSplit}
-          onChange={(_, value) => setParagraphSplit(value as number)}
-          min={10}
-          max={200}
-          sx={{
-            flex: 1,
-            minWidth: isMobile ? 'auto' : '60px',
-            marginRight: isMobile ? '12px' : '8px',
-            color: '#2563eb',
-            '& .MuiSlider-track': {
-              backgroundColor: '#2563eb',
-            },
-            '& .MuiSlider-rail': {
-              backgroundColor: '#e2e8f0',
-            },
-          }}
-        />
-        <TextField
-          value={paragraphSplit}
-          onChange={(e) => {
-            const value = parseInt(e.target.value);
-            if (value >= 10 && value <= 200) {
-              setParagraphSplit(value);
-            }
-          }}
-          size="small"
-          sx={{
-            width: '60px',
-            '& .MuiOutlinedInput-root': {
-              height: '36px',
-              fontSize: '14px',
-              color: isMobile ? '#000000' : '#ffffff',
-              backgroundColor: isMobile ? '#ffffff' : 'rgba(255,255,255,0.1)',
-              '& fieldset': {
-                borderColor: isMobile ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
-              },
-              '&:hover fieldset': {
-                borderColor: isMobile ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
-              },
-              '&.Mui-focused fieldset': {
-                borderColor: '#2563eb',
-              },
-            },
-          }}
-        />
-      </Box>
+      <SettingSlider
+        icon={<Splitscreen sx={{ fontSize: '20px' }} />}
+        label="分段"
+        value={paragraphSplit}
+        min={10}
+        max={200}
+        onChange={setParagraphSplit}
+        isMobile={isMobile}
+        showLabel={!isNarrow}
+      />
     </Box>
   ), [speed, fontSize, gapWidth, paragraphSplit, isMobile, isNarrow, isFollowing, followAnchor]);
 
@@ -1019,6 +884,9 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           scrollbarWidth: 'none',
           [`&::highlight(${READ_HIGHLIGHT}), & *::highlight(${READ_HIGHLIGHT})`]: {
             color: 'rgba(255,255,255,0.35)',
+          },
+          [`&::highlight(${NEXT_HIGHLIGHT}), & *::highlight(${NEXT_HIGHLIGHT})`]: {
+            color: '#fde047',
           },
         }}
       >

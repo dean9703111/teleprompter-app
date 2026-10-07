@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Token } from '../utils/pinyinMatcher';
+import { createMotion, predictPosition, recordHeard, recordMatch, resetMotion } from '../utils/followMotion';
 
 type Matcher = typeof import('../utils/pinyinMatcher');
 
-export type FollowReason = 'speech' | 'anchor' | 'refresh';
 export type FollowStatus = 'idle' | 'starting' | 'listening';
 
 interface UseSmartFollowOptions {
   enabled: boolean;
   text: string;
   resolveCursor: (tokens: Token[]) => number;
-  onCursorChange: (index: number, tokens: Token[], reason: FollowReason) => void;
   onError: (message: string) => void;
 }
 
@@ -44,18 +43,18 @@ const getRecognitionLang = (text: string) => {
   return navigator.language.toLowerCase().startsWith('zh') ? navigator.language : 'zh-TW';
 };
 
-export const useSmartFollow = ({ enabled, text, resolveCursor, onCursorChange, onError }: UseSmartFollowOptions) => {
+export const useSmartFollow = ({ enabled, text, resolveCursor, onError }: UseSmartFollowOptions) => {
   const [status, setStatus] = useState<FollowStatus>('idle');
   const [heard, setHeard] = useState('');
   const [similarity, setSimilarity] = useState<number | null>(null);
 
-  const callbacksRef = useRef({ resolveCursor, onCursorChange, onError });
+  const callbacksRef = useRef({ resolveCursor, onError });
   useEffect(() => {
-    callbacksRef.current = { resolveCursor, onCursorChange, onError };
+    callbacksRef.current = { resolveCursor, onError };
   });
 
   const tokensRef = useRef<Token[]>([]);
-  const cursorRef = useRef(-1);
+  const motionRef = useRef(createMotion());
   const spokenRef = useRef<Token[]>([]);
   const heardRef = useRef('');
   const readyRef = useRef(false);
@@ -63,13 +62,11 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onCursorChange, o
   const lastRelocateRef = useRef(0);
 
   const anchor = useCallback(() => {
-    const tokens = tokensRef.current;
-    cursorRef.current = callbacksRef.current.resolveCursor(tokens);
+    resetMotion(motionRef.current, callbacksRef.current.resolveCursor(tokensRef.current), performance.now());
     spokenRef.current = [];
     heardRef.current = '';
     setHeard('');
     setSimilarity(null);
-    callbacksRef.current.onCursorChange(cursorRef.current, tokens, 'anchor');
   }, []);
 
   // 手動捲動後，以畫面上的位置為準重新定位；中斷辨識，避免還沒結束的那句把位置拉回去
@@ -79,10 +76,13 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onCursorChange, o
     recognitionRef.current?.abort();
   }, [anchor]);
 
-  const refresh = useCallback(() => {
-    if (!readyRef.current) return;
-    callbacksRef.current.onCursorChange(cursorRef.current, tokensRef.current, 'refresh');
+  // 每一幀呼叫：回傳目前推估念到的 token 位置（含小數），尚未就緒時回傳 null
+  const predict = useCallback((now: number) => {
+    if (!readyRef.current) return null;
+    return predictPosition(motionRef.current, now, tokensRef.current.length - 1);
   }, []);
+
+  const getTokens = useCallback(() => tokensRef.current, []);
 
   useEffect(() => {
     if (!enabled) return;
@@ -111,6 +111,10 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onCursorChange, o
     };
 
     const handleResult = (matcher: Matcher, event: SpeechRecognitionEvent) => {
+      const now = performance.now();
+      const motion = motionRef.current;
+      recordHeard(motion, now);
+
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
@@ -126,19 +130,16 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onCursorChange, o
 
       const tokens = tokensRef.current;
       const spoken = spokenRef.current.concat(matcher.tokenize(interim));
-      let match = matcher.locate(tokens, spoken, cursorRef.current);
+      let match = matcher.locate(tokens, spoken, motion.index);
 
-      const now = performance.now();
       if (!match && now - lastRelocateRef.current > RELOCATE_INTERVAL) {
         lastRelocateRef.current = now;
-        match = matcher.relocate(tokens, spoken, cursorRef.current);
+        match = matcher.relocate(tokens, spoken, motion.index);
       }
       if (!match) return;
 
       setSimilarity(match.similarity);
-      if (match.index === cursorRef.current) return;
-      cursorRef.current = match.index;
-      callbacksRef.current.onCursorChange(match.index, tokens, 'speech');
+      recordMatch(motion, match.index, now);
     };
 
     setStatus('starting');
@@ -186,5 +187,5 @@ export const useSmartFollow = ({ enabled, text, resolveCursor, onCursorChange, o
     };
   }, [enabled, text, anchor]);
 
-  return { status, heard, similarity, reanchor, refresh };
+  return { status, heard, similarity, reanchor, predict, getTokens };
 };
