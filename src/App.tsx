@@ -408,9 +408,10 @@ function App() {
           >
             {[
               { key: 'Space', desc: '播放/暫停' },
+              { key: 'M', desc: '智慧跟讀' },
               { key: 'Esc', desc: '退出全螢幕' },
-              { key: '↑', desc: '加速' },
-              { key: '↓', desc: '減速' },
+              { key: '↑', desc: '加速（跟讀時位置上移）' },
+              { key: '↓', desc: '減速（跟讀時位置下移）' },
               { key: '+', desc: '放大字體' },
               { key: '-', desc: '縮小字體' },
             ].map((item) => (

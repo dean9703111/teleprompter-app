@@ -18,7 +18,18 @@ import {
   Close,
   Splitscreen,
   Settings,
+  Mic,
+  AlignVerticalTop,
 } from '@mui/icons-material';
+import { useSmartFollow, type FollowReason } from '../hooks/useSmartFollow';
+import type { Token } from '../utils/pinyinMatcher';
+import { buildCharIndex, createCharRange, type CharPosition } from '../utils/textIndex';
+
+const FOLLOW_EASING = 0.1;
+const FOLLOW_ANCHOR_MIN = 10;
+const FOLLOW_ANCHOR_MAX = 60;
+const READ_HIGHLIGHT = 'teleprompter-read';
+const supportsHighlight = typeof CSS !== 'undefined' && 'highlights' in CSS;
 
 interface TeleprompterPlayerProps {
   text: string;
@@ -47,6 +58,13 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const [renderedLinesHtml, setRenderedLinesHtml] = useState<string>('');
   const [estimatedTime, setEstimatedTime] = useState(0); // 預計完成時間（秒）
   const [settingsOpen, setSettingsOpen] = useState(false); // 設定面板開關
+  const [isFollowing, setIsFollowing] = useState(false); // 智慧跟讀
+  const [followError, setFollowError] = useState<string | null>(null);
+  const [followAnchor, setFollowAnchor] = useState(() => {
+    // 跟讀時，目前念到的那一行停在畫面高度的百分比
+    const saved = localStorage.getItem('teleprompter-followAnchor');
+    return saved ? parseInt(saved) : 25;
+  });
   
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md')); // 768px 以下視為手機
@@ -58,6 +76,11 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   const startTimeRef = useRef<number>(0);
   const pausedTimeRef = useRef<number>(0);
   const measureSpanRef = useRef<HTMLSpanElement | null>(null);
+  const pillarBoxRef = useRef<HTMLDivElement>(null);
+  const charIndexRef = useRef<CharPosition[] | null>(null);
+  const followTargetRef = useRef<number | null>(null);
+  const followFrameRef = useRef<number | undefined>(undefined);
+  const reanchorTimerRef = useRef<number | undefined>(undefined);
 
   // 儲存設定到 localStorage
   useEffect(() => {
@@ -75,6 +98,10 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   useEffect(() => {
     localStorage.setItem('teleprompter-paragraphSplit', paragraphSplit.toString());
   }, [paragraphSplit]);
+
+  useEffect(() => {
+    localStorage.setItem('teleprompter-followAnchor', followAnchor.toString());
+  }, [followAnchor]);
 
   // 計算總高度和進度
   const calculateProgress = useCallback(() => {
@@ -98,6 +125,149 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     const estimatedSeconds = remainingScroll / scrollSpeed;
     setEstimatedTime(Math.max(0, Math.ceil(estimatedSeconds)));
   }, [speed]);
+
+  // 智慧跟讀：畫面字元索引（DOM 重新渲染後失效）
+  const getCharIndex = useCallback(() => {
+    const cached = charIndexRef.current;
+    if (cached?.length && cached[0].node.isConnected && cached[cached.length - 1].node.isConnected) {
+      return cached;
+    }
+    const index = containerRef.current ? buildCharIndex(containerRef.current) : [];
+    charIndexRef.current = index;
+    return index;
+  }, []);
+
+  const stepFollowScroll = useCallback(() => {
+    const container = containerRef.current;
+    const target = followTargetRef.current;
+    if (!container || target === null) {
+      followFrameRef.current = undefined;
+      return;
+    }
+
+    const before = container.scrollTop;
+    const diff = target - before;
+    if (Math.abs(diff) < 1) {
+      container.scrollTop = target;
+      followTargetRef.current = null;
+    } else {
+      container.scrollTop = before + Math.sign(diff) * Math.max(1, Math.abs(diff) * FOLLOW_EASING);
+    }
+    calculateProgress();
+
+    if (followTargetRef.current === null || container.scrollTop === before) {
+      followTargetRef.current = null;
+      followFrameRef.current = undefined;
+      return;
+    }
+    followFrameRef.current = requestAnimationFrame(stepFollowScroll);
+  }, [calculateProgress]);
+
+  const scrollFollowTo = useCallback((token: Token) => {
+    const container = containerRef.current;
+    const rect = createCharRange(getCharIndex(), token.start, token.start + 1)?.getBoundingClientRect();
+    if (!container || !rect) return;
+
+    const lineCenter = rect.top + rect.height / 2 - container.getBoundingClientRect().top + container.scrollTop;
+    const maxScroll = container.scrollHeight - container.clientHeight;
+    const target = lineCenter - (container.clientHeight * followAnchor) / 100;
+    followTargetRef.current = Math.max(0, Math.min(maxScroll, target));
+    if (followFrameRef.current === undefined) {
+      followFrameRef.current = requestAnimationFrame(stepFollowScroll);
+    }
+  }, [getCharIndex, stepFollowScroll, followAnchor]);
+
+  // 已念過的文字變暗（CSS Custom Highlight API，不動 DOM）
+  const highlightRead = useCallback((token: Token | undefined) => {
+    if (!supportsHighlight) return;
+    const range = token ? createCharRange(getCharIndex(), 0, token.end) : null;
+    if (range) {
+      CSS.highlights.set(READ_HIGHLIGHT, new Highlight(range));
+    } else {
+      CSS.highlights.delete(READ_HIGHLIGHT);
+    }
+  }, [getCharIndex]);
+
+  // 以畫面上「跟讀線」所在那一行為起點，回傳它前一個 token
+  const resolveFollowCursor = useCallback((tokens: Token[]) => {
+    const container = containerRef.current;
+    if (!container || !tokens.length) return -1;
+
+    const index = getCharIndex();
+    const anchorY = container.getBoundingClientRect().top + (container.clientHeight * followAnchor) / 100;
+    let lo = 0;
+    let hi = tokens.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const rect = createCharRange(index, tokens[mid].start, tokens[mid].start + 1)?.getBoundingClientRect();
+      if (rect && rect.bottom <= anchorY) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo - 1;
+  }, [getCharIndex, followAnchor]);
+
+  const handleFollowCursor = useCallback((index: number, tokens: Token[], reason: FollowReason) => {
+    const token = tokens[index];
+    highlightRead(token);
+    if (token && reason !== 'anchor') scrollFollowTo(token);
+  }, [highlightRead, scrollFollowTo]);
+
+  const handleFollowError = useCallback((message: string) => {
+    setFollowError(message);
+    setIsFollowing(false);
+  }, []);
+
+  const follow = useSmartFollow({
+    enabled: isFollowing,
+    text,
+    resolveCursor: resolveFollowCursor,
+    onCursorChange: handleFollowCursor,
+    onError: handleFollowError,
+  });
+  const { reanchor: reanchorFollow, refresh: refreshFollow } = follow;
+
+  const toggleFollow = useCallback(() => {
+    if (!isFollowing) {
+      setIsPlaying(false);
+      setFollowError(null);
+    }
+    setIsFollowing(!isFollowing);
+  }, [isFollowing]);
+
+  const scheduleReanchor = useCallback(() => {
+    followTargetRef.current = null;
+    window.clearTimeout(reanchorTimerRef.current);
+    reanchorTimerRef.current = window.setTimeout(reanchorFollow, 300);
+  }, [reanchorFollow]);
+
+  // 手機觸控捲動也要重新定位
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!isFollowing || !container) return;
+    container.addEventListener('touchmove', scheduleReanchor, { passive: true });
+    return () => container.removeEventListener('touchmove', scheduleReanchor);
+  }, [isFollowing, scheduleReanchor]);
+
+  // 關閉跟讀或離開時清掉高亮與捲動
+  useEffect(() => {
+    if (!isFollowing) return;
+    return () => {
+      followTargetRef.current = null;
+      if (followFrameRef.current !== undefined) cancelAnimationFrame(followFrameRef.current);
+      followFrameRef.current = undefined;
+      window.clearTimeout(reanchorTimerRef.current);
+      if (supportsHighlight) CSS.highlights.delete(READ_HIGHLIGHT);
+    };
+  }, [isFollowing]);
+
+  useEffect(() => {
+    if (!followError) return;
+    const timer = setTimeout(() => setFollowError(null), 6000);
+    return () => clearTimeout(timer);
+  }, [followError]);
 
   // 滾動動畫
   const animateScroll = useCallback((timestamp: number) => {
@@ -163,22 +333,41 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     // 手動滾動時重置時間參考，確保下次播放從當前位置開始
     startTimeRef.current = 0;
     pausedTimeRef.current = 0;
-  }, [calculateProgress]);
+
+    if (isFollowing) scheduleReanchor();
+  }, [calculateProgress, isFollowing, scheduleReanchor]);
 
   // 快捷鍵處理
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     switch (e.code) {
       case 'Space':
         e.preventDefault();
-        setIsPlaying(!isPlaying);
+        if (isFollowing) {
+          setIsFollowing(false);
+        } else {
+          setIsPlaying(!isPlaying);
+        }
+        break;
+      case 'KeyM':
+        if (e.target instanceof HTMLInputElement) break;
+        e.preventDefault();
+        toggleFollow();
         break;
       case 'ArrowUp':
         e.preventDefault();
-        setSpeed(prev => Math.min(20, prev + 1));
+        if (isFollowing) {
+          setFollowAnchor(prev => Math.max(FOLLOW_ANCHOR_MIN, prev - 5));
+        } else {
+          setSpeed(prev => Math.min(20, prev + 1));
+        }
         break;
       case 'ArrowDown':
         e.preventDefault();
-        setSpeed(prev => Math.max(1, prev - 1));
+        if (isFollowing) {
+          setFollowAnchor(prev => Math.min(FOLLOW_ANCHOR_MAX, prev + 5));
+        } else {
+          setSpeed(prev => Math.max(1, prev - 1));
+        }
         break;
       case 'Equal':
       case 'NumpadAdd':
@@ -194,7 +383,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         onExit();
         break;
     }
-  }, [isPlaying, onExit]);
+  }, [isPlaying, isFollowing, toggleFollow, onExit]);
 
   // 事件監聽器
   useEffect(() => {
@@ -304,27 +493,25 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
 
   // 渲染繞柱子的文字
   const renderLinesWithPillar = useCallback(() => {
-    if (gapWidth === 0 || !containerRef.current || !measureSpanRef.current) {
+    const box = pillarBoxRef.current;
+    if (gapWidth === 0 || !box || !measureSpanRef.current) {
       setRenderedLinesHtml('');
       return;
     }
 
-    const container = containerRef.current;
-    const containerWidth = container.offsetWidth;
-    const computedStyle = getComputedStyle(container);
+    // 以實際文字框（扣掉 padding）計算：左右欄等寬，中間是 gapWidth% 的柱子
+    const computedStyle = getComputedStyle(box);
     const padL = parseFloat(computedStyle.paddingLeft) || 0;
     const padR = parseFloat(computedStyle.paddingRight) || 0;
-    const contentWidth = containerWidth - padL - padR;
-    
-    const pillarWidthPx = (containerWidth * gapWidth) / 100;
-    const centerX = padL + contentWidth / 2;
-    const pillarLeft = centerX - pillarWidthPx / 2;
-    const pillarRight = centerX + pillarWidthPx / 2;
+    const contentWidth = box.clientWidth - padL - padR;
     const margin = 8;
+    const columnWidth = Math.max(0, (contentWidth * (100 - gapWidth)) / 200 - margin);
 
+    // 量測字型要跟顯示的一樣是粗體，英數字寬度才不會低估
     const measureSpan = measureSpanRef.current;
     measureSpan.style.fontSize = `${fontSize}px`;
     measureSpan.style.fontFamily = 'inherit';
+    measureSpan.style.fontWeight = 'bold';
 
     const escapeHtml = (text: string) => {
       return text.replace(/[<>&"]/g, (c) => ({
@@ -332,71 +519,38 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
       }[c] || c));
     };
 
+    const fitLength = (segment: string) => {
+      for (let i = 1; i <= segment.length; ++i) {
+        measureSpan.textContent = segment.slice(0, i);
+        if (measureSpan.offsetWidth > columnWidth) return i - 1;
+      }
+      return segment.length;
+    };
+
+    const renderRow = (left: string, right: string) =>
+      `<div style="display:flex;align-items:flex-start;width:100%;min-height:1em;margin-bottom:0.1em;flex-wrap:nowrap;overflow:hidden;">` +
+      `<span style="display:inline-block;flex-shrink:0;width:${columnWidth}px;white-space:pre;">${left}</span>` +
+      `<span style="display:inline-block;height:1em;flex-shrink:0;width:${gapWidth}%;"></span>` +
+      `<span style="display:inline-block;max-width:${columnWidth}px;white-space:pre;">${right}</span>` +
+      `</div>`;
+
     let html = '';
     const paras = processedText.replace(/\r/g, '').split('\n');
 
-    for (let pi = 0; pi < paras.length; ++pi) {
-      let para = paras[pi];
-      if (!para) {
-        html += `<div style="display:flex;align-items:flex-start;width:100%;min-height:1em;margin-bottom:0.1em;flex-wrap:nowrap;overflow:hidden;">
-          <span style="display:inline-block;white-space:pre;max-width:48vw;overflow-wrap:break-word;word-break:break-all;">&nbsp;</span>
-          <span style="display:inline-block;height:1em;flex-shrink:0;width:${gapWidth}%;"></span>
-          <span style="display:inline-block;white-space:pre;max-width:48vw;overflow-wrap:break-word;word-break:break-all;"></span>
-        </div>`;
+    for (const paragraph of paras) {
+      if (!paragraph) {
+        html += renderRow('&nbsp;', '');
         continue;
       }
 
+      let para = paragraph;
       while (para.length > 0) {
-        let left = '', right = '';
-        let i = 1;
-
-        // 填充左邊直到碰到柱子
-        for (; i <= para.length; ++i) {
-          measureSpan.textContent = para.slice(0, i);
-          if (measureSpan.offsetWidth < pillarLeft - padL - margin) {
-            left = para.slice(0, i);
-          } else {
-            left = para.slice(0, i - 1);
-            right = para.slice(i - 1);
-            break;
-          }
-        }
-
-        if (right === '' && left !== para) {
-          right = para;
-          left = '';
-        }
-
-        // 填充右邊
-        let rightSeg = '';
-        if (right) {
-          let j = 1;
-          for (; j <= right.length; ++j) {
-            measureSpan.textContent = right.slice(0, j);
-            if (measureSpan.offsetWidth < (contentWidth - (pillarRight - padL) - margin)) {
-              rightSeg = right.slice(0, j);
-            } else {
-              rightSeg = right.slice(0, j - 1);
-              break;
-            }
-          }
-        }
-
-        if (right && rightSeg === '' && right.length > 0) {
-          rightSeg = right;
-        }
-
-        html += `<div style="display:flex;align-items:flex-start;width:100%;min-height:1em;margin-bottom:0.1em;flex-wrap:nowrap;overflow:hidden;">
-          <span style="display:inline-block;white-space:pre;max-width:48vw;overflow-wrap:break-word;word-break:break-all;">${escapeHtml(left) || '&nbsp;'}</span>
-          <span style="display:inline-block;height:1em;flex-shrink:0;width:${gapWidth}%;"></span>
-          <span style="display:inline-block;white-space:pre;max-width:48vw;overflow-wrap:break-word;word-break:break-all;">${escapeHtml(rightSeg)}</span>
-        </div>`;
-
-        if (right) {
-          para = right.slice(rightSeg.length);
-        } else {
-          para = '';
-        }
+        const left = para.slice(0, fitLength(para));
+        const rest = para.slice(left.length);
+        // 欄寬連一個字都放不下時至少放一個字，避免整段塞進右欄
+        const right = rest.slice(0, Math.max(1, fitLength(rest)));
+        html += renderRow(escapeHtml(left) || '&nbsp;', escapeHtml(right));
+        para = rest.slice(right.length);
       }
     }
 
@@ -410,6 +564,15 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
     }, 50); // 50ms 延遲
     return () => clearTimeout(timer);
   }, [renderLinesWithPillar]);
+
+  // 同一個物件 React 才不會每次 render 都重設 innerHTML
+  const pillarHtml = useMemo(() => ({ __html: renderedLinesHtml }), [renderedLinesHtml]);
+
+  // 排版改變後，跟讀高亮與位置重新對齊
+  useEffect(() => {
+    charIndexRef.current = null;
+    refreshFollow();
+  }, [processedText, renderedLinesHtml, gapWidth, fontSize, followAnchor, refreshFollow]);
 
   // 監聽視窗大小變化，重新計算排版（防抖處理）
   useEffect(() => {
@@ -443,22 +606,22 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
   // 設定控制項組件（可重用）
   const settingsControls = useMemo(() => (
     <Box sx={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 3 : 2, width: isMobile ? '100%' : 'auto' }}>
-      {/* 速度控制 */}
+      {/* 速度控制（跟讀時換成跟讀位置，自動捲動速度用不到） */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Speed sx={{ fontSize: '20px' }} />
+        {isFollowing ? <AlignVerticalTop sx={{ fontSize: '20px' }} /> : <Speed sx={{ fontSize: '20px' }} />}
         {!isNarrow && (
           <Typography variant="body2" sx={{ minWidth: '40px', fontSize: isMobile ? '16px' : '14px' }}>
-            速度
+            {isFollowing ? '位置' : '速度'}
           </Typography>
         )}
         <Slider
-          value={speed}
-          onChange={(_, value) => setSpeed(value as number)}
-          min={1}
-          max={20}
+          value={isFollowing ? followAnchor : speed}
+          onChange={(_, value) => (isFollowing ? setFollowAnchor : setSpeed)(value as number)}
+          min={isFollowing ? FOLLOW_ANCHOR_MIN : 1}
+          max={isFollowing ? FOLLOW_ANCHOR_MAX : 20}
           sx={{
             flex: 1,
-            minWidth: isMobile ? 'auto' : '80px',
+            minWidth: isMobile ? 'auto' : '60px',
             marginRight: isMobile ? '12px' : '8px',
             color: '#2563eb',
             '& .MuiSlider-track': {
@@ -470,10 +633,12 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           }}
         />
         <TextField
-          value={speed}
+          value={isFollowing ? followAnchor : speed}
           onChange={(e) => {
             const value = parseInt(e.target.value);
-            if (value >= 1 && value <= 20) {
+            if (isFollowing) {
+              if (value >= FOLLOW_ANCHOR_MIN && value <= FOLLOW_ANCHOR_MAX) setFollowAnchor(value);
+            } else if (value >= 1 && value <= 20) {
               setSpeed(value);
             }
           }}
@@ -514,7 +679,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           max={100}
           sx={{
             flex: 1,
-            minWidth: isMobile ? 'auto' : '80px',
+            minWidth: isMobile ? 'auto' : '60px',
             marginRight: isMobile ? '12px' : '8px',
             color: '#2563eb',
             '& .MuiSlider-track': {
@@ -570,7 +735,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           max={30}
           sx={{
             flex: 1,
-            minWidth: isMobile ? 'auto' : '80px',
+            minWidth: isMobile ? 'auto' : '60px',
             marginRight: isMobile ? '12px' : '8px',
             color: '#2563eb',
             '& .MuiSlider-track': {
@@ -626,7 +791,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           max={200}
           sx={{
             flex: 1,
-            minWidth: isMobile ? 'auto' : '80px',
+            minWidth: isMobile ? 'auto' : '60px',
             marginRight: isMobile ? '12px' : '8px',
             color: '#2563eb',
             '& .MuiSlider-track': {
@@ -667,7 +832,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         />
       </Box>
     </Box>
-  ), [speed, fontSize, gapWidth, paragraphSplit, isMobile, isNarrow]);
+  ), [speed, fontSize, gapWidth, paragraphSplit, isMobile, isNarrow, isFollowing, followAnchor]);
 
   return (
     <Box
@@ -692,18 +857,24 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
           right: 0,
           height: '60px',
           backgroundColor: 'rgba(0,0,0,0.8)',
-          display: 'flex',
+          // 桌面版：控制項在螢幕正中央，左右按鈕放不下時才往旁邊讓
+          display: isMobile ? 'flex' : 'grid',
+          gridTemplateColumns: '1fr auto 1fr',
+          columnGap: 1,
           alignItems: 'center',
-          justifyContent: isMobile ? 'space-between' : 'center',
+          justifyContent: 'space-between',
           px: 2,
           zIndex: 1001,
         }}
       >
         {/* 播放控制 */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, position: isMobile ? 'static' : 'absolute', left: isMobile ? 'auto' : '16px' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, justifySelf: 'start', whiteSpace: 'nowrap' }}>
           <Button
             variant="contained"
-            onClick={() => setIsPlaying(!isPlaying)}
+            onClick={() => {
+              setIsFollowing(false);
+              setIsPlaying(!isPlaying);
+            }}
             sx={{
               backgroundColor: isPlaying ? '#ef4444' : '#22c55e',
               color: '#ffffff',
@@ -717,6 +888,28 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
             }}
           >
             {isNarrow ? (isPlaying ? '⏸' : '▶') : (isPlaying ? '⏸ 暫停' : '▶ 播放')}
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={toggleFollow}
+            title="智慧跟讀：念到哪裡就捲到哪裡（M）"
+            startIcon={isNarrow ? undefined : <Mic />}
+            sx={{
+              color: '#ffffff',
+              borderColor: isFollowing ? '#2563eb' : 'rgba(255,255,255,0.3)',
+              backgroundColor: isFollowing ? '#2563eb' : 'transparent',
+              minWidth: isNarrow ? '40px' : (isMobile ? '70px' : '80px'),
+              height: '40px',
+              px: 1,
+              fontSize: isMobile ? '13px' : '14px',
+              fontWeight: 'bold',
+              '&:hover': {
+                borderColor: isFollowing ? '#1d4ed8' : 'rgba(255,255,255,0.5)',
+                backgroundColor: isFollowing ? '#1d4ed8' : 'rgba(255,255,255,0.1)',
+              },
+            }}
+          >
+            {isNarrow ? <Mic /> : '跟讀'}
           </Button>
         </Box>
 
@@ -756,8 +949,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
             minWidth: isNarrow ? '40px' : (isMobile ? '70px' : '80px'),
             height: '40px',
             fontSize: isMobile ? '13px' : '14px',
-            position: isMobile ? 'static' : 'absolute',
-            right: isMobile ? 'auto' : '16px',
+            justifySelf: 'end',
             '&:hover': {
               borderColor: 'rgba(255,255,255,0.5)',
               backgroundColor: 'rgba(255,255,255,0.1)',
@@ -825,6 +1017,9 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
             display: 'none',
           },
           scrollbarWidth: 'none',
+          [`&::highlight(${READ_HIGHLIGHT}), & *::highlight(${READ_HIGHLIGHT})`]: {
+            color: 'rgba(255,255,255,0.35)',
+          },
         }}
       >
         {/* 上方空白區 - 50% 螢幕高度 */}
@@ -849,6 +1044,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         ) : (
           // 分欄模式 - 繞柱子排版
           <Box
+            ref={pillarBoxRef}
             sx={{
               position: 'relative',
               padding: 4,
@@ -862,7 +1058,7 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
             {/* 文字行 */}
             <Box
               sx={{ position: 'relative', zIndex: 2 }}
-              dangerouslySetInnerHTML={{ __html: renderedLinesHtml }}
+              dangerouslySetInnerHTML={pillarHtml}
             />
           </Box>
         )}
@@ -871,26 +1067,101 @@ const TeleprompterPlayer: React.FC<TeleprompterPlayerProps> = ({ text, onExit })
         <Box sx={{ height: '50vh', pointerEvents: 'none' }} />
       </Box>
 
+      {/* 跟讀位置標記（對齊文字區 top: 60px、bottom: 4px） */}
+      {isFollowing && (
+        <Box
+          sx={{
+            position: 'fixed',
+            left: '8px',
+            top: `calc(60px + (100vh - 64px) * ${followAnchor / 100})`,
+            transform: 'translateY(-50%)',
+            width: 0,
+            height: 0,
+            borderTop: '10px solid transparent',
+            borderBottom: '10px solid transparent',
+            borderLeft: '14px solid #2563eb',
+            zIndex: 1001,
+            pointerEvents: 'none',
+            transition: 'top 0.2s ease',
+          }}
+        />
+      )}
+
+      {/* 智慧跟讀狀態 */}
+      {(isFollowing || followError) && (
+        <Box
+          sx={{
+            position: 'fixed',
+            left: isMobile ? '16px' : '32px',
+            bottom: '16px',
+            zIndex: 1100,
+            maxWidth: isMobile ? 'calc(100vw - 32px)' : '50vw',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+            px: 1.5,
+            py: 0.75,
+            fontSize: '14px',
+            color: followError ? '#fca5a5' : 'rgba(255,255,255,0.75)',
+            background: 'rgba(0,0,0,0.6)',
+            borderRadius: '0.75em',
+            backdropFilter: 'blur(4px)',
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            '@keyframes followPulse': {
+              '0%, 100%': { opacity: 1 },
+              '50%': { opacity: 0.3 },
+            },
+          }}
+        >
+          {followError ?? (
+            <>
+              <Box
+                component="span"
+                sx={{
+                  width: 8,
+                  height: 8,
+                  flexShrink: 0,
+                  borderRadius: '50%',
+                  backgroundColor: follow.status === 'listening' ? '#ef4444' : '#94a3b8',
+                  animation: follow.status === 'listening' ? 'followPulse 1.2s ease-in-out infinite' : 'none',
+                }}
+              />
+              {follow.status === 'listening' ? '聆聽中' : '啟動中…'}
+              {follow.similarity !== null && ` · 相似 ${Math.round(follow.similarity * 100)}%`}
+              {follow.heard && (
+                <Box component="span" sx={{ color: 'rgba(255,255,255,0.5)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {follow.heard}
+                </Box>
+              )}
+            </>
+          )}
+        </Box>
+      )}
+
       {/* 預計完成時間顯示 */}
-      <Box
-        sx={{
-          position: 'fixed',
-          top: isMobile ? '68px' : '70px',
-          right: isMobile ? '16px' : '32px',
-          zIndex: 1100,
-          fontSize: isMobile ? '1.4rem' : '2.2rem',
-          color: '#fff',
-          background: 'rgba(0,0,0,0.5)',
-          borderRadius: '1em',
-          padding: isMobile ? '0.2em 0.8em' : '0.3em 1.1em',
-          pointerEvents: 'none',
-          textAlign: 'center',
-          minWidth: isMobile ? '2.5em' : '3.5em',
-          backdropFilter: 'blur(4px)',
-        }}
-      >
-        {formatEstimatedTime(estimatedTime)}
-      </Box>
+      {!isFollowing && (
+        <Box
+          sx={{
+            position: 'fixed',
+            top: isMobile ? '68px' : '70px',
+            right: isMobile ? '16px' : '32px',
+            zIndex: 1100,
+            fontSize: isMobile ? '1.4rem' : '2.2rem',
+            color: '#fff',
+            background: 'rgba(0,0,0,0.5)',
+            borderRadius: '1em',
+            padding: isMobile ? '0.2em 0.8em' : '0.3em 1.1em',
+            pointerEvents: 'none',
+            textAlign: 'center',
+            minWidth: isMobile ? '2.5em' : '3.5em',
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          {formatEstimatedTime(estimatedTime)}
+        </Box>
+      )}
 
       {/* 進度指示器 */}
       <LinearProgress
